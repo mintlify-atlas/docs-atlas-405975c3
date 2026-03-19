@@ -88,18 +88,27 @@ Extended user data linked to `auth.users`. Created on signup via `createCustomer
 | `phone` | `text \| null` | Phone number |
 | `whatsapp` | `text \| null` | WhatsApp number |
 | `birthdate` | `date \| null` | Date of birth |
-| `customer_tier` | `text` | `'bronze' \| 'silver' \| 'gold' \| 'platinum'` |
+| `tier` | `text` | `'bronze' \| 'silver' \| 'gold' \| 'platinum'` |
 | `total_orders` | `integer` | Lifetime order count |
-| `total_spent` | `numeric` | Lifetime spend in MXN |
+| `total_spent` | `numeric` | Lifetime spend in MXN (used for tier calculation) |
+| `points` | `integer` | Cached V-Coins balance |
 | `account_status` | `text` | `'active' \| 'suspended' \| 'banned'` |
+| `referral_code` | `text \| null` | Unique referral code |
+| `ai_preferences` | `jsonb \| null` | AI personalization preferences |
 
 ```typescript
 interface CustomerProfile {
-    id: string; full_name: string;
-    phone: string | null; whatsapp: string | null;
+    id: string;
+    email: string;
+    full_name: string | null;
+    phone: string | null;
+    whatsapp: string | null;
     birthdate: string | null;
-    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
-    total_orders: number; total_spent: number;
+    tier: 'bronze' | 'silver' | 'gold' | 'platinum';  // not "customer_tier"
+    total_orders: number;
+    total_spent: number;
+    points: number;
+    account_status: 'active' | 'suspended' | 'banned';
 }
 ```
 

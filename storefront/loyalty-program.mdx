@@ -16,19 +16,19 @@ VSM Store's loyalty program (internally called **V-Coins**) awards points on eve
 
 Four tiers are defined in `src/lib/domain/loyalty.ts` as `LOYALTY_TIERS`:
 
-| Tier | ID | Minimum Spent | Discount Multiplier | Free Shipping |
-|------|----|--------------|---------------------|---------------|
-| Bronze | `bronze` | $0 MXN | Base rate | No |
-| Silver | `silver` | Configurable | 1.x multiplier | Above minimum |
-| Gold | `gold` | Configurable | Higher multiplier | Yes |
-| Platinum | `platinum` | Configurable | Maximum multiplier | Yes |
+| Tier | ID | Minimum Spent | Discount | Free Shipping | Free Shipping Min |
+|------|----|--------------|----------|---------------|------------------|
+| Bronze | `bronze` | $0 MXN | 0% | No | — |
+| Silver | `silver` | $5,000 MXN | 5% | Yes | Orders ≥ $1,000 |
+| Gold | `gold` | $20,000 MXN | 10% | Yes (always) | — |
+| Platinum | `platinum` | $50,000 MXN | 15% | Express, always | — |
 
 ```typescript
 // Re-exported from loyalty.service.ts
 type Tier = 'bronze' | 'silver' | 'gold' | 'platinum';
 
-// customer_profiles.customer_tier stores the current tier
-customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+// customer_profiles.tier stores the current tier
+tier: 'bronze' | 'silver' | 'gold' | 'platinum';
 ```
 
 <Info>

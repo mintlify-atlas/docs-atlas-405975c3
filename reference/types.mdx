@@ -104,11 +104,13 @@ interface ProductVariant {
     id: string;
     product_id: string;
     sku: string | null;
-    price: number;
+    price: number | null;   // null = use parent product price
     stock: number;
     images: string[];
     is_active: boolean;
-    options?: ProductVariantOption[];
+    options: ProductVariantOption[];
+    created_at?: string;
+    updated_at?: string;
 }
 ```
 
@@ -284,22 +286,61 @@ export interface CategoryWithChildren extends Category {
 
 ## Customer profile type
 
+Defined in `src/types/customer.ts`. The `tier` field (not `customer_tier`) is the canonical field name.
+
 ```typescript
-// Used in AuthContext and auth.service.ts
+// src/types/customer.ts
+
+export type CustomerTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+export type AccountStatus = 'active' | 'suspended' | 'banned';
+
+export interface AIPreferences {
+    preferred_styles?: string[];
+    interests?: string[];
+    visual_theme_hint?: 'vape' | 'herbal' | 'neutral';
+    personality_notes?: string;
+}
+
+export interface IAContext {
+    last_query?: string;
+    last_intent?: string;
+    persona_cluster?: string;
+    visual_theme_hint?: 'vape' | 'herbal' | 'neutral';
+    propensity_score?: number;
+    updated_at?: string;
+}
+
 export interface CustomerProfile {
-    id: string;                                              // = auth.users.id
-    full_name: string;
+    id: string;                    // = auth.users.id (UUID)
+    email: string;
+    full_name: string | null;
     phone: string | null;
     whatsapp: string | null;
-    birthdate: string | null;
-    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+    birthdate: string | null;      // ISO date string
+    tier: CustomerTier;            // 'bronze' | 'silver' | 'gold' | 'platinum'
+    account_status: AccountStatus; // 'active' | 'suspended' | 'banned'
+    suspension_end: string | null; // ISO datetime when suspension lifts
     total_orders: number;
-    total_spent: number;
-    avatar_url?: string | null;
-    account_status?: 'active' | 'suspended' | 'banned';
-    suspension_end?: string | null;
+    total_spent: number;           // Cumulative MXN spent — used for tier calculation
+    avatar_url: string | null;
+    favorite_category_id: string | null;
+    points: number;                // Current V-Coins balance (cached)
+    referral_code: string | null;
+    referred_by: string | null;
+    ai_preferences: AIPreferences | null;
+    ia_context: IAContext | null;
+    // Computed by customer_intelligence_360 view
+    segment?: 'Prospecto' | 'Campeón' | 'Leal' | 'En Riesgo' | 'Casi Perdido' | 'Nuevo' | 'Regular';
+    health_status?: string;
+    last_interactions?: unknown[];
+    created_at: string;
+    updated_at: string;
 }
 ```
+
+<Warning>
+  The tier field is named `tier`, not `customer_tier`. Older documentation or README references to `customer_tier` reflect an earlier schema version.
+</Warning>
 
 ---
 

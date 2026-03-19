@@ -104,9 +104,12 @@ interface AuthContextValue {
     user: User | null;                   // Supabase auth user
     profile: CustomerProfile | null;     // customer_profiles row
     loading: boolean;                    // Initial session check in progress
+    isAuthenticated: boolean;            // Convenience flag: !!user
     signIn(email: string, password: string): Promise<void>;
-    signUp(email: string, password: string, fullName?: string, phone?: string): Promise<void>;
+    signUp(email: string, password: string, fullName: string, phone?: string): Promise<void>;
     signOut(): Promise<void>;
+    resetPassword(email: string): Promise<void>;
+    refreshProfile(): Promise<void>;     // Re-fetch profile after profile update
 }
 ```
 
@@ -150,21 +153,35 @@ function ProfileButton() {
 
 ## `CustomerProfile` Interface
 
-The profile data stored in `customer_profiles` and exposed via `AuthContext`:
+The profile data stored in `customer_profiles` and exposed via `AuthContext`. Defined in `src/types/customer.ts`:
 
 ```typescript
 interface CustomerProfile {
-    id: string;                                              // = auth.uid()
-    full_name: string;
+    id: string;                    // = auth.uid() UUID
+    email: string;
+    full_name: string | null;
     phone: string | null;
     whatsapp: string | null;
-    birthdate: string | null;                               // ISO date string
-    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+    birthdate: string | null;      // ISO date string e.g. "1995-06-15"
+    tier: 'bronze' | 'silver' | 'gold' | 'platinum';  // loyalty tier
+    account_status: 'active' | 'suspended' | 'banned';
+    suspension_end: string | null;
     total_orders: number;
-    total_spent: number;
-    account_status?: string;                                // e.g. 'active' | 'banned' | 'suspended'
+    total_spent: number;           // Cumulative MXN — used for tier calculation
+    avatar_url: string | null;
+    points: number;                // Cached V-Coins balance
+    referral_code: string | null;
+    referred_by: string | null;
+    ai_preferences: AIPreferences | null;
+    ia_context: IAContext | null;
+    created_at: string;
+    updated_at: string;
 }
 ```
+
+<Note>
+  The loyalty tier field is named `tier`, not `customer_tier`. The `points` field is a cached balance — authoritative balance comes from the `get_customer_points_balance` RPC.
+</Note>
 
 ## Account Status (God Mode)
 

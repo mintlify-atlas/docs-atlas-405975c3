@@ -138,7 +138,7 @@ Fetches the full `customer_profiles` row for a user. Uses `maybeSingle()` so it 
 ```typescript
 const profile = await getCustomerProfile(user.id);
 if (profile) {
-    console.log(profile.customer_tier); // 'bronze' | 'silver' | 'gold' | 'platinum'
+    console.log(profile.tier); // 'bronze' | 'silver' | 'gold' | 'platinum'
 }
 ```
 

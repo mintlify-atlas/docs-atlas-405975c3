@@ -92,14 +92,14 @@ The Profile page prominently displays the customer's current loyalty tier using 
 
 | Tier | Minimum Spent | Badge Color | Benefits |
 |------|--------------|-------------|----------|
-| `bronze` | $0 MXN | Brown/copper | Base earn rate |
-| `silver` | Threshold 2 | Gray/silver | Increased earn rate, free shipping above minimum |
-| `gold` | Threshold 3 | Yellow/gold | Higher earn rate, free shipping |
-| `platinum` | Threshold 4 | Purple/platinum | Maximum earn rate, priority service |
+| `bronze` | $0 MXN | Copper | Base earn rate |
+| `silver` | $5,000 MXN | Silver | 5% discount, free shipping above $1,000 |
+| `gold` | $20,000 MXN | Gold | 10% discount, free shipping always |
+| `platinum` | $50,000 MXN | Platinum | 15% discount, express shipping, VIP access |
 
 ```typescript
-// The customer_tier field from CustomerProfile:
-customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+// The tier field from CustomerProfile (src/types/customer.ts):
+tier: 'bronze' | 'silver' | 'gold' | 'platinum';
 ```
 
 <Info>
