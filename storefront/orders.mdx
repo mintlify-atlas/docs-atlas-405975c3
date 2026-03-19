@@ -1,0 +1,196 @@
+---
+title: "Order History"
+description: "Order list at /orders, order detail at /orders/:orderId, re-order support, order tracking, and full OrderRecord interface."
+---
+
+The order history section allows authenticated customers to view all their past orders, drill into order details, re-add items to cart, and track shipments. All routes require authentication.
+
+## Routes
+
+| Route | Component | Auth |
+|-------|-----------|------|
+| `/orders` | `Orders` | Yes |
+| `/orders/:orderId` | `OrderDetail` | Yes |
+| `/track-order` | Inline tracking form | No |
+| `/checkout` | `Checkout` | No |
+
+## `OrderRecord` Interface
+
+Orders returned from Supabase use the `OrderRecord` type (from `src/types/order.ts`), which maps directly to the `orders` table:
+
+```typescript
+const ORDER_SELECT =
+    'id, order_number, customer_id, items, subtotal, shipping_cost, ' +
+    'discount, total, status, payment_method, payment_status, ' +
+    'shipping_address_id, billing_address_id, tracking_notes, ' +
+    'whatsapp_sent, whatsapp_sent_at, created_at, updated_at';
+```
+
+The `Order` interface from `src/types/cart.ts` (used in checkout context):
+
+```typescript
+export interface Order extends CheckoutFormData {
+    id: string;
+    items: CartItem[];
+    subtotal: number;
+    total: number;
+    createdAt: string;
+    payment_status?: 'pending' | 'paid' | 'failed' | 'refunded';
+    mp_preference_id?: string | null;   // Mercado Pago preference ID
+    mp_payment_id?: string | null;      // Mercado Pago payment ID
+    mp_payment_data?: MercadoPagoPaymentData | null;
+}
+```
+
+## Order Statuses
+
+```typescript
+type OrderStatus =
+    | 'pending'      // Created, awaiting confirmation
+    | 'confirmed'    // Admin confirmed the order
+    | 'processing'   // Being prepared
+    | 'shipped'      // Handed off to carrier
+    | 'delivered'    // Confirmed delivered
+    | 'cancelled';   // Cancelled by admin or customer
+```
+
+Status transitions are managed by admins via `AdminOrders`. The customer-facing `OrderDetail` page reflects the current status with a visual progress indicator.
+
+## Payment Statuses
+
+```typescript
+type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+```
+
+| Status | When set |
+|--------|----------|
+| `pending` | Order created, payment not yet confirmed |
+| `paid` | Mercado Pago webhook confirmed payment, or admin marked as paid |
+| `failed` | Mercado Pago returned failure, or transfer never received |
+| `refunded` | Admin issued a refund |
+
+## Creating an Order
+
+`createOrder(data)` from `orders.service.ts`:
+
+```typescript
+export async function createOrder(data: CreateOrderData): Promise<OrderRecord>
+```
+
+`CreateOrderData` type:
+
+```typescript
+interface CreateOrderData {
+    customer_id: string;
+    items: CartItem[];             // Serialized as JSONB in DB
+    subtotal: number;
+    shipping_cost?: number;        // Default: 0
+    discount?: number;             // Default: 0
+    total: number;
+    payment_method: PaymentMethod; // 'whatsapp' | 'mercadopago' | 'cash' | 'transfer' | 'card'
+    shipping_address_id?: string | null;
+    billing_address_id?: string | null;
+    tracking_notes?: string | null;
+    earned_points?: number;        // Optional override; defaults to calculateLoyaltyPoints(total)
+}
+```
+
+After inserting the order, loyalty points are calculated and awarded automatically. See [Cart & Checkout](/storefront/cart-checkout#loyalty-points-on-checkout) for details.
+
+## Hooks
+
+```typescript
+import { useCustomerOrders, useOrder, useCreateOrder } from '@/hooks/useOrders';
+
+// All orders for the authenticated customer
+const { data: orders, isLoading } = useCustomerOrders(customerId);
+// Query key: ['orders', customerId]
+// staleTime: 2 minutes
+
+// Single order by ID
+const { data: order } = useOrder(orderId);
+// Query key: ['orders', 'detail', orderId]
+// staleTime: 1 minute
+
+// Mutation to create an order
+const createOrder = useCreateOrder();
+createOrder.mutate(orderData, {
+    onSuccess: (order) => { /* redirect or show confirmation */ }
+});
+// On success: invalidates ['orders', customerId], ['loyalty', 'balance', customerId], ['loyalty', 'tier', customerId]
+```
+
+## Order History Page
+
+`Orders` (`src/pages/Orders.tsx`) fetches all customer orders with `useCustomerOrders(user.id)` and renders them as a list ordered by `created_at DESC`. Each row shows:
+
+- `order_number` — auto-generated human-readable identifier
+- `status` — colored badge
+- `total` — formatted as MXN currency
+- `created_at` — formatted with `formatTimeAgo()` from `src/lib/utils.ts`
+- Item count and first product thumbnail
+
+## Order Detail Page
+
+`OrderDetail` (`src/pages/OrderDetail.tsx`) shows the full order breakdown: line items with images and prices, delivery type, payment method, and a status timeline.
+
+### Re-order Feature
+
+The detail page includes a **"Volver a pedir"** (Re-order) button that calls `loadOrderItems()` from the cart store:
+
+```typescript
+import { useCartStore } from '@/stores/cart.store';
+
+const loadOrderItems = useCartStore((s) => s.loadOrderItems);
+
+// Replaces the entire cart with the historical order's items
+loadOrderItems(order.items);
+
+// Then navigate to checkout
+nav('/checkout');
+```
+
+<Warning>
+  `loadOrderItems()` **replaces** the current cart entirely. Any existing cart items will be lost. The UI should warn the customer before triggering a re-order.
+</Warning>
+
+## Order Tracking (`/track-order`)
+
+Customers can track a shipment by entering a tracking number. The `useOrderTracking()` hook fires a mutation:
+
+```typescript
+export function useOrderTracking() {
+    return useMutation({
+        mutationFn: (trackingNumber: string) =>
+            ordersService.getTrackingInfo(trackingNumber),
+    });
+}
+```
+
+This calls `getTrackingInfo()` from `orders.service.ts` which queries the `tracking_notes` field and any external carrier API integration (carrier API integration is on the roadmap).
+
+## Mercado Pago Fields
+
+Orders paid via Mercado Pago carry additional fields:
+
+```typescript
+mp_preference_id: string | null;  // MP checkout preference
+mp_payment_id: string | null;     // MP transaction ID after payment
+mp_payment_data: MercadoPagoPaymentData | null;  // Full MP response
+```
+
+```typescript
+export interface MercadoPagoPaymentData {
+    id: string;
+    status: string;
+    status_detail: string;
+    payment_method_id: string;
+    payment_type_id: string;
+    external_reference?: string;
+    preference_id?: string;
+    transaction_amount: number;
+    currency_id: string;
+    date_approved?: string;
+    [key: string]: unknown;
+}
+```

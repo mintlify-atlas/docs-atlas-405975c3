@@ -1,0 +1,388 @@
+---
+title: "TypeScript Types"
+description: "Complete reference for all major TypeScript interfaces, types, and utility functions used across VSM Store."
+---
+
+Types are defined in `src/types/` and constants are in `src/types/constants.ts`. Domain constants are the single source of truth for literal union types.
+
+---
+
+## Domain constants
+
+### Section
+
+```typescript
+// src/types/constants.ts
+export const SECTIONS = {
+    VAPE: 'vape',
+    CANNABIS: '420',
+} as const;
+
+export type Section = typeof SECTIONS[keyof typeof SECTIONS];
+// Resolves to: 'vape' | '420'
+```
+
+### ProductStatus
+
+```typescript
+export const PRODUCT_STATUS = {
+    ACTIVE: 'active',
+    LEGACY: 'legacy',
+    DISCONTINUED: 'discontinued',
+    COMING_SOON: 'coming_soon',
+} as const;
+
+export type ProductStatus = typeof PRODUCT_STATUS[keyof typeof PRODUCT_STATUS];
+// Resolves to: 'active' | 'legacy' | 'discontinued' | 'coming_soon'
+```
+
+### OrderStatus
+
+```typescript
+// Used in admin-orders.service.ts
+type AdminOrderStatus = 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+```
+
+---
+
+## Product types
+
+### Product
+
+```typescript
+// src/types/product.ts
+export interface Product {
+    id: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    short_description: string | null;
+    price: number;                      // MXN
+    compare_at_price: number | null;    // Original/crossed-out price
+    stock: number;
+    sku: string | null;
+    section: Section;                   // 'vape' | '420'
+    category_id: string;                // UUID reference to categories table
+    tags: string[];
+    status: ProductStatus;
+    images: string[];                   // Array of public image URLs
+    cover_image: string | null;         // Primary display image URL
+    is_featured: boolean;
+    is_featured_until: string | null;   // ISO datetime — auto-expiry
+    is_new: boolean;
+    is_new_until: string | null;
+    is_bestseller: boolean;
+    is_bestseller_until: string | null;
+    is_active: boolean;
+    created_at: string;                 // ISO datetime
+    updated_at: string;
+    // Ontology fields
+    specs: Record<string, string>;      // e.g. { 'Potencia': '80W', 'Batería': '3000mAh' }
+    badges: string[];                   // e.g. ['Nuevo', 'Trending']
+    // AI strategy fields
+    ai_is_featured: boolean;
+    ai_sales_note: string | null;
+    ai_exclude: boolean;
+    // Joined
+    variants?: ProductVariant[];
+}
+```
+
+### ProductInsert / ProductUpdate
+
+```typescript
+export type ProductInsert = Omit<Product, 'id' | 'created_at' | 'updated_at'>;
+export type ProductUpdate = Partial<ProductInsert>;
+```
+
+### ProductVariant
+
+Defined in `src/types/variant.ts`. Returned nested inside `Product.variants`:
+
+```typescript
+interface ProductVariant {
+    id: string;
+    product_id: string;
+    sku: string | null;
+    price: number;
+    stock: number;
+    images: string[];
+    is_active: boolean;
+    options?: ProductVariantOption[];
+}
+```
+
+---
+
+## Cart and checkout types
+
+```typescript
+// src/types/cart.ts
+
+export interface CartItem {
+    product: Product;
+    quantity: number;
+    variant_id?: string | null;
+    variant_name?: string | null;
+}
+
+export type DeliveryType = 'pickup' | 'delivery';
+
+export type PaymentMethod = 'whatsapp' | 'mercadopago' | 'cash' | 'transfer' | 'card';
+
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+
+export interface CheckoutFormData {
+    customerName: string;
+    customerPhone: string;
+    deliveryType: DeliveryType;
+    address: string;          // Required only when deliveryType === 'delivery'
+    paymentMethod: PaymentMethod;
+}
+
+export interface Order extends CheckoutFormData {
+    id: string;
+    items: CartItem[];
+    subtotal: number;
+    total: number;
+    createdAt: string;
+    payment_status?: PaymentStatus;
+    mp_preference_id?: string | null;          // Mercado Pago
+    mp_payment_id?: string | null;
+    mp_payment_data?: MercadoPagoPaymentData | null;
+}
+```
+
+### MercadoPagoPaymentData
+
+```typescript
+export interface MercadoPagoPaymentData {
+    id: string;
+    status: string;
+    status_detail: string;
+    payment_method_id: string;
+    payment_type_id: string;
+    external_reference?: string;
+    preference_id?: string;
+    transaction_amount: number;
+    currency_id: string;
+    date_approved?: string;
+    [key: string]: unknown;   // Additional MP API fields
+}
+```
+
+---
+
+## Order types
+
+```typescript
+// src/types/order.ts
+
+export interface OrderItem {
+    product_id: string;
+    variant_id?: string | null;
+    variant_name?: string | null;
+    name: string;
+    price: number;
+    quantity: number;
+    image?: string;
+    section?: string;
+}
+
+export interface OrderRecord {
+    id: string;
+    order_number: string;
+    customer_id: string;
+    items: OrderItem[];
+    subtotal: number;
+    shipping_cost: number;
+    discount: number;
+    total: number;
+    status: string;
+    payment_method: string;
+    payment_status: string;
+    shipping_address_id: string | null;
+    billing_address_id: string | null;
+    tracking_notes: string | null;
+    whatsapp_sent: boolean;
+    whatsapp_sent_at: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface CreateOrderData {
+    customer_id: string;
+    items: OrderItem[];
+    subtotal: number;
+    shipping_cost?: number;    // defaults to 0
+    discount?: number;         // defaults to 0
+    total: number;
+    payment_method: 'cash' | 'transfer' | 'card' | 'mercadopago' | 'whatsapp';
+    shipping_address_id?: string;
+    billing_address_id?: string;
+    tracking_notes?: string;
+    earned_points?: number;    // override auto-calculated points
+}
+
+export interface TrackingEvent {
+    id: string;
+    date: string;
+    status: string;
+    location: string;
+    isCompleted: boolean;
+}
+
+export interface TrackingInfo {
+    trackingNumber: string;
+    status: 'pending' | 'in_transit' | 'delivered' | 'exception';
+    statusText: string;
+    estimatedDelivery?: string | null;
+    events: TrackingEvent[];
+    carrier: string;
+}
+
+export interface RealtimeOrderEvent {
+    id: string;
+    customer_name: string;
+    city: string;
+    product_name: string;
+    product_image: string;
+}
+```
+
+---
+
+## Category types
+
+```typescript
+// src/types/category.ts
+
+export interface Category {
+    id: string;
+    name: string;
+    slug: string;
+    section: Section;
+    parent_id: string | null;   // null = root category, string = subcategory
+    description: string | null;
+    image_url: string | null;
+    is_popular: boolean;        // Shows 'Trending' badge in storefront
+    order_index: number;
+    is_active: boolean;
+    created_at: string;
+}
+
+export type CategoryInsert = Omit<Category, 'id' | 'created_at'>;
+export type CategoryUpdate = Partial<CategoryInsert>;
+
+// With subcategories resolved client-side
+export interface CategoryWithChildren extends Category {
+    children: Category[];   // Direct subcategories (parent_id === this.id)
+}
+```
+
+---
+
+## Customer profile type
+
+```typescript
+// Used in AuthContext and auth.service.ts
+export interface CustomerProfile {
+    id: string;                                              // = auth.users.id
+    full_name: string;
+    phone: string | null;
+    whatsapp: string | null;
+    birthdate: string | null;
+    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+    total_orders: number;
+    total_spent: number;
+    avatar_url?: string | null;
+    account_status?: 'active' | 'suspended' | 'banned';
+    suspension_end?: string | null;
+}
+```
+
+---
+
+## Utility functions
+
+All defined in `src/lib/utils.ts`.
+
+### cn()
+
+```typescript
+export function cn(...inputs: ClassValue[]): string
+```
+
+Wrapper around `clsx` for conditional class name merging.
+
+```typescript
+import { cn } from '@/lib/utils';
+
+cn('base-class', isActive && 'active', hasError ? 'error' : 'normal');
+// → 'base-class active normal'
+```
+
+### formatPrice()
+
+```typescript
+export function formatPrice(price: number): string
+```
+
+Formats a number as Mexican Peso currency using `Intl.NumberFormat('es-MX', { currency: 'MXN' })`.
+
+```typescript
+formatPrice(299.99);  // → '$299.99'
+formatPrice(0);       // → '$0.00' (safe on invalid input too)
+```
+
+### slugify()
+
+```typescript
+export function slugify(text: string): string
+```
+
+Converts a string to a URL-safe slug: lowercased, accents removed, non-alphanumeric characters replaced with `-`.
+
+```typescript
+slugify('Mod Aegis Legend');   // → 'mod-aegis-legend'
+slugify('Líquido Cítrico');    // → 'liquido-citrico'
+```
+
+### formatTimeAgo()
+
+```typescript
+export function formatTimeAgo(dateInput: string | Date): string
+```
+
+Returns a human-readable relative time string in Spanish (es-MX).
+
+```typescript
+formatTimeAgo(new Date(Date.now() - 30000));  // → 'hace un momento'
+formatTimeAgo(new Date(Date.now() - 120000)); // → 'hace 2 min'
+formatTimeAgo(new Date(Date.now() - 7200000));// → 'hace 2 h'
+formatTimeAgo(new Date(Date.now() - 86400000));// → 'hace 1 d'
+```
+
+| Threshold | Output |
+|-----------|--------|
+| < 60 seconds | `'hace un momento'` |
+| < 1 hour | `'hace N min'` |
+| < 1 day | `'hace N h'` |
+| < 1 week | `'hace N d'` |
+| ≥ 1 week | `date.toLocaleDateString()` |
+
+### optimizeImage()
+
+```typescript
+export function optimizeImage(
+    url: string | undefined | null,
+    options?: {
+        width?: number;
+        height?: number;
+        quality?: number;
+        format?: 'origin' | 'webp' | 'avif';
+    }
+): string | undefined
+```
+
+Currently a **passthrough** — Supabase Storage image transformations require a paid plan. The function returns the original URL unchanged. The transformation logic is present in commented code, ready to activate after a plan upgrade.

@@ -1,0 +1,125 @@
+---
+title: "Search"
+description: "Live product search with debouncing, multi-field ilike matching, SearchOverlay, and AI-powered voice search."
+---
+
+VSM Store implements a live search system with debounced input, multi-field matching across the `products` table, and an optional voice search capability backed by the `voice-intelligence` Supabase Edge Function.
+
+## Routes
+
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/buscar` | `SearchResults` | Full-page search results with query from URL `?q=` param |
+| Any page | `SearchOverlay` | Modal search overlay triggered from the `Header` |
+
+## `useSearch()` Hook
+
+`useSearch` (`src/hooks/useSearch.ts`) is a debounced React Query wrapper over `searchProducts()`.
+
+```typescript
+import { useSearch } from '@/hooks/useSearch';
+
+function SearchInput() {
+    const [query, setQuery] = useState('');
+    const { data: results, isLoading } = useSearch(query);
+    // results: Product[]
+}
+```
+
+Internally, the hook applies `useDebounce(query, delay)` (`src/hooks/useDebounce.ts`) before triggering the query, preventing a database request on every keystroke. The query is disabled when the debounced value is empty.
+
+## `searchProducts()` Service
+
+The `searchProducts` function in `src/services/search.service.ts` performs a multi-field `ilike` search:
+
+```typescript
+export async function searchProducts(
+    query: string,
+    options: SearchOptions = {}
+): Promise<Product[]>
+
+interface SearchOptions {
+    section?: Section;   // Restrict to 'vape' or '420'
+    limit?: number;      // Default: 20
+}
+```
+
+**Search fields:**
+- `name` — ilike `%query%`
+- `short_description` — ilike `%query%`
+- `description` — ilike `%query%`
+- `sku` — ilike `%query%`
+- `tags` — array contains `{query}`
+
+```typescript
+// Actual PostgREST filter applied:
+dbQuery.or(
+  `name.ilike.${pattern},short_description.ilike.${pattern},` +
+  `description.ilike.${pattern},sku.ilike.${pattern},tags.cs.{${query}}`
+);
+```
+
+Results are ordered by `is_featured DESC, name ASC`. User-input special characters (`%`, `_`) are escaped before building the pattern:
+
+```typescript
+const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
+const pattern = `%${escaped}%`;
+```
+
+<Note>
+  Only `is_active = true` and `status = 'active'` products are searched. Out-of-stock items (`stock = 0`) are **not** excluded from search — they can appear in results so customers can see they exist. This differs from catalog listings which hide zero-stock items.
+</Note>
+
+## `SearchOverlay` Component
+
+`SearchOverlay` (`src/components/search/SearchOverlay.tsx`) is a modal dialog rendered at the top of the DOM via a portal. It is triggered from `<Header />` when the search icon is clicked or `Ctrl+K` is pressed.
+
+<CardGroup cols={2}>
+  <Card title="Live results" icon="magnifying-glass">
+    Results appear below the input field after the debounce delay (typically 300ms). Shows product `cover_image`, `name`, `price`, and `section` label.
+  </Card>
+  <Card title="Keyboard navigation" icon="keyboard">
+    Arrow keys navigate results, `Enter` follows the link to the product page, `Escape` closes the overlay.
+  </Card>
+</CardGroup>
+
+## `SearchResults` Page
+
+`SearchResults` (`src/pages/SearchResults.tsx`) is the full-page view at `/buscar`. It reads the search query from the `?q=` URL parameter, enabling shareable search URLs and back-navigation.
+
+```tsx
+// Reading the query from URL
+const [searchParams] = useSearchParams();
+const query = searchParams.get('q') ?? '';
+const { data: products } = useSearch(query);
+```
+
+The page renders a product grid with filter options. When no results are found, a "Sin resultados para \"query\"" empty state is shown with suggestions.
+
+## Voice Search
+
+VSM Store includes an optional voice search feature powered by:
+
+1. **`voice.service.ts`** — Captures audio via the Web Speech API (`SpeechRecognition`) or a recorded audio blob.
+2. **`voice-intelligence` Edge Function** — A Supabase Edge Function (Deno runtime) that sends transcribed or raw audio text to the Gemini 2.0 Flash API, converting natural language queries like *"busca líquidos de mango sin nicotina"* into structured product search terms.
+
+<Info>
+  Voice search requires microphone permission from the browser. It is progressively enhanced — the UI degrades gracefully to text-only input if `SpeechRecognition` is unavailable or permission is denied.
+</Info>
+
+<Accordion title="Voice search data flow">
+  <Steps>
+    <Step title="Capture speech">
+      `voice.service.ts` activates `window.SpeechRecognition` and collects the interim transcript.
+    </Step>
+    <Step title="Send to edge function">
+      The transcript is POST-ed to the `voice-intelligence` Supabase Edge Function with the customer context.
+    </Step>
+    <Step title="Gemini NLP processing">
+      The edge function calls `gemini-2.0-flash` to normalize the natural language query into clean search terms (e.g., removing filler words, extracting product attributes).
+    </Step>
+    <Step title="Execute search">
+      The normalized query string is passed to `searchProducts()` and results are displayed.
+    </Step>
+  </Steps>
+</Accordion>

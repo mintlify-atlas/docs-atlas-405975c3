@@ -1,0 +1,201 @@
+---
+title: "Authentication"
+description: "Supabase Auth-powered signup, login, and password reset with AuthContext, ProtectedRoute, and automatic customer_profiles creation."
+---
+
+Authentication in VSM Store is handled by Supabase Auth with email/password. The `AuthContext` wraps the entire app and exposes user state and auth actions to all components. Customer profiles are auto-created in the `customer_profiles` table on every signup via an upsert.
+
+## Routes
+
+| Route | Component | Auth Required |
+|-------|-----------|---------------|
+| `/login` | `Login` (`src/pages/auth/Login.tsx`) | No |
+| `/signup` | `SignUp` (`src/pages/auth/SignUp.tsx`) | No |
+| `/profile` | `Profile` | **Yes** |
+| `/orders` | `Orders` | **Yes** |
+| `/loyalty` | `Loyalty` | **Yes** |
+
+## Service Functions
+
+All auth operations are in `src/services/auth.service.ts`:
+
+```typescript
+// Sign Up — creates Supabase auth user + customer_profiles row
+export async function signUp(
+    email: string,
+    password: string,
+    fullName?: string,
+    phone?: string,
+    ai_preferences?: AIPreferences,
+    ia_context?: IAContext
+): Promise<AuthResponse>
+
+// Sign In
+export async function signIn(
+    email: string,
+    password: string
+): Promise<AuthResponse>
+
+// Sign Out
+export async function signOut(): Promise<void>
+
+// Reset Password — sends email with redirectTo /login
+export async function resetPassword(email: string): Promise<void>
+
+// Get current authenticated user
+export async function getCurrentUser(): Promise<User | null>
+
+// Fetch customer profile by Supabase auth user ID
+export async function getCustomerProfile(
+    userId: string
+): Promise<CustomerProfile | null>
+
+// Create or update customer profile (upsert)
+export async function createCustomerProfile(
+    userId: string,
+    data: {
+        full_name?: string | null;
+        phone: string | null;
+        whatsapp: string | null;
+        ai_preferences?: AIPreferences;
+        ia_context?: IAContext;
+    }
+): Promise<void>
+
+// Update an existing profile
+export async function updateProfile(
+    userId: string,
+    data: {
+        full_name?: string;
+        phone?: string;
+        whatsapp?: string;
+        birthdate?: string;
+        avatar_url?: string;
+        ia_context?: IAContext;
+    }
+): Promise<void>
+```
+
+## Auto-Profile Creation on Signup
+
+After a successful `supabase.auth.signUp()`, `signUp()` immediately calls `createCustomerProfile()` with an **upsert** (not insert), making signup idempotent:
+
+```typescript
+// From auth.service.ts signUp():
+if (data.user) {
+    await createCustomerProfile(data.user.id, {
+        full_name: fullName,
+        phone: phone ?? null,
+        whatsapp: phone ?? null,
+        ai_preferences,
+        ia_context
+    });
+}
+```
+
+The profile `id` equals `auth.uid()` — enforced by the `customer_profiles` table schema and RLS policies.
+
+## `AuthContext`
+
+`AuthContext` (`src/contexts/AuthContext.tsx`) is provided at the top of the provider tree (inside `BrowserRouter`, wrapping `QueryClientProvider`):
+
+```typescript
+interface AuthContextValue {
+    user: User | null;                   // Supabase auth user
+    profile: CustomerProfile | null;     // customer_profiles row
+    loading: boolean;                    // Initial session check in progress
+    signIn(email: string, password: string): Promise<void>;
+    signUp(email: string, password: string, fullName?: string, phone?: string): Promise<void>;
+    signOut(): Promise<void>;
+}
+```
+
+Access it via the `useAuth()` hook:
+
+```typescript
+import { useAuth } from '@/hooks/useAuth';
+
+function ProfileButton() {
+    const { user, profile, loading, signOut } = useAuth();
+    if (loading) return <Spinner />;
+    if (!user) return <Link to="/login">Iniciar sesión</Link>;
+    return <span>{profile?.full_name}</span>;
+}
+```
+
+<Warning>
+  `useAuth()` throws an error if called outside of `<AuthProvider>`. The provider is mounted in `src/main.tsx` and wraps the entire application.
+</Warning>
+
+## `ProtectedRoute` Component
+
+`ProtectedRoute` (`src/components/auth/ProtectedRoute.tsx`) wraps routes that require authentication:
+
+```tsx
+// From App.tsx
+<Route
+    path="/profile"
+    element={
+        <ProtectedRoute>
+            <Profile />
+        </ProtectedRoute>
+    }
+/>
+```
+
+**Behavior:**
+- While `loading === true`, renders a full-page skeleton/spinner
+- If `user === null`, redirects to `/login` with `state={{ from: location }}` so the user returns to their intended destination after login
+- If authenticated, renders `children`
+
+## `CustomerProfile` Interface
+
+The profile data stored in `customer_profiles` and exposed via `AuthContext`:
+
+```typescript
+interface CustomerProfile {
+    id: string;                                              // = auth.uid()
+    full_name: string;
+    phone: string | null;
+    whatsapp: string | null;
+    birthdate: string | null;                               // ISO date string
+    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+    total_orders: number;
+    total_spent: number;
+    account_status?: string;                                // e.g. 'active' | 'banned' | 'suspended'
+}
+```
+
+## Account Status (God Mode)
+
+The `account_status` field on `customer_profiles` is managed exclusively by admins via the **God Mode** feature in `AdminCustomerDetails`:
+
+<CardGroup cols={2}>
+  <Card title="Ban" icon="ban">
+    Sets `account_status = 'banned'`. The customer can no longer log in or access protected routes.
+  </Card>
+  <Card title="Suspend" icon="pause">
+    Sets `account_status = 'suspended'`. Temporary restriction — the admin can lift it at any time.
+  </Card>
+</CardGroup>
+
+<Info>
+  The storefront does not currently enforce `account_status` checks on the client side. Status enforcement is primarily at the Supabase RLS policy level and admin interface.
+</Info>
+
+## Password Reset Flow
+
+<Steps>
+  <Step title="Request reset">
+    The login page includes a "Forgot password" link. The user enters their email and `resetPassword(email)` is called.
+  </Step>
+  <Step title="Supabase sends email">
+    Supabase Auth emails a magic link with `redirectTo: ${window.location.origin}/login`.
+  </Step>
+  <Step title="User clicks link">
+    The link redirects back to `/login` with a Supabase session token in the URL hash, which the auth listener in `AuthContext` picks up.
+  </Step>
+  <Step title="Set new password">
+    Once the session is active from the magic link, the user sets a new password via `supabase.auth.updateUser({ password: newPassword })`.
+  </Step>
+</Steps>

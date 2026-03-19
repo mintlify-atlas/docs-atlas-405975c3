@@ -1,0 +1,146 @@
+---
+title: "Category Management"
+description: "Hierarchical category CRUD, section assignment, ordering, and slug management at /admin/categories."
+---
+
+Categories are managed at `/admin/categories`. The store has 13 categories organized hierarchically using a `parent_id` self-reference. Categories are split between the `vape` and `420` sections.
+
+## Data Shape
+
+```typescript
+export interface CategoryFormData {
+    name: string;
+    slug: string;                  // Auto-generated from name via slugify()
+    section: 'vape' | '420';
+    parent_id: string | null;      // null = top-level category
+    is_active: boolean;
+    description?: string;
+    image_url?: string | null;
+    is_popular?: boolean;
+    order_index?: number;          // Controls display order within section
+}
+
+// Full Category type includes audit fields:
+interface Category extends CategoryFormData {
+    id: string;
+    created_at: string;
+}
+```
+
+## Hierarchical Structure
+
+Categories support one level of nesting via `parent_id`:
+
+```
+vape (section)
+├── Mods (parent_id: null)
+│   ├── Box Mods (parent_id: Mods.id)
+│   └── Pod Systems (parent_id: Mods.id)
+├── Líquidos (parent_id: null)
+└── Accesorios Vape (parent_id: null)
+
+420 (section)
+├── Vaporizers (parent_id: null)
+├── Fumables (parent_id: null)
+└── ...
+```
+
+The `parent_id` is a foreign key to the same `categories` table. The TypeScript type `CategoryWithChildren` extends `Category` with a `children: Category[]` array used to build tree views in the UI.
+
+## CRUD Functions
+
+### getAllCategories
+
+```typescript
+export async function getAllCategories(): Promise<Category[]>
+```
+
+Fetches all categories ordered first by `section` (ascending), then by `order_index` (ascending). Returns all fields including `description`, `image_url`, and `is_popular`.
+
+### createCategory
+
+```typescript
+export async function createCategory(
+    category: CategoryFormData
+): Promise<Category>
+```
+
+### updateCategory
+
+```typescript
+export async function updateCategory(
+    id: string,
+    category: Partial<CategoryFormData>
+): Promise<Category>
+```
+
+### deleteCategory
+
+```typescript
+export async function deleteCategory(id: string): Promise<void>
+```
+
+<Warning>
+  Deleting a category triggers the database trigger `trg_category_delete_protect`, which:
+  - Moves orphaned products to a fallback "Sin Categoría" category in the same section
+  - Re-parents child categories to the deleted category's parent
+  - Blocks deletion of the fallback backup category itself
+
+  This ensures no product is left without a valid category.
+</Warning>
+
+### toggleCategoryActive
+
+```typescript
+export async function toggleCategoryActive(
+    id: string,
+    flag: boolean
+): Promise<void>
+```
+
+Toggles the `is_active` field. Inactive categories are hidden from the storefront navigation but their products remain accessible if a customer has a direct URL.
+
+## Ordering
+
+Categories within a section are sorted by `order_index` (ascending). Lower numbers appear first. Update `order_index` via `updateCategory` to reorder:
+
+```typescript
+// Move a category to the top of its section
+await updateCategory(categoryId, { order_index: 0 });
+
+// Move a category to the end
+await updateCategory(categoryId, { order_index: 999 });
+```
+
+## Slug Generation
+
+Category slugs are auto-generated from the `name` field using the `slugify()` utility:
+
+```typescript
+import { slugify } from '@/lib/utils';
+
+// Example: "Accesorios Vape" → "accesorios-vape"
+const slug = slugify(name);
+```
+
+Slugs are used in storefront URLs (`/vape/accesorios-vape`) and must be unique per section. If a slug collision occurs, add a suffix manually before saving.
+
+## Section Assignment
+
+Every category belongs to either `vape` or `420`. Products can only be assigned to categories in their own section. Attempting to assign a vape product to a 420 category is prevented at the service layer.
+
+## SQL: Viewing Category Tree
+
+```sql
+-- View all categories with their parent names
+SELECT 
+    c.id,
+    c.name,
+    c.section,
+    c.order_index,
+    c.is_active,
+    p.name AS parent_name
+FROM categories c
+LEFT JOIN categories p ON c.parent_id = p.id
+ORDER BY c.section, c.order_index;
+```

@@ -1,0 +1,231 @@
+---
+title: "Monitoring & Analytics"
+description: "System health dashboard, live user presence, Sentry error tracking, Google Analytics 4 e-commerce events, and app log streaming at /admin/monitoring."
+---
+
+The monitoring page at `/admin/monitoring` provides a real-time view of system health: live connected users via Supabase Realtime presence, a streaming log panel with 5-second refresh, KPI counters for errors/warnings, and a health pulse indicator.
+
+## AdminMonitoring Page Structure
+
+<CardGroup cols={2}>
+  <Card title="MonitoringHeader" icon="shield">
+    Shows online user count, error count, and warning count. Color-coded by severity.
+  </Card>
+  <Card title="MonitoringStatsGrid" icon="bar-chart-2">
+    Four KPI cards: Online Users, Total Errors, Total Warnings, Total Info Logs.
+  </Card>
+  <Card title="LiveUsersPanel" icon="users">
+    Real-time list of active users via Supabase Realtime presence. Shows email, current path, and session start time.
+  </Card>
+  <Card title="HealthPulse" icon="activity">
+    Heartbeat indicator. Green = no errors. Session uptime counter in minutes.
+  </Card>
+  <Card title="SystemLogsPanel" icon="terminal">
+    Streams the last 50 `app_logs` entries, auto-refreshing every 5 seconds. Filterable by log level.
+  </Card>
+</CardGroup>
+
+## Sentry Integration
+
+Sentry is initialized in `monitoring.service.ts` via `initMonitoring()`, called from `main.tsx` at app startup:
+
+```typescript
+export const initMonitoring = () => {
+    if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
+        loadSentry().then((Sentry) => {
+            if (!Sentry) return;
+            Sentry.init({
+                dsn: import.meta.env.VITE_SENTRY_DSN,
+                integrations: [
+                    Sentry.browserTracingIntegration(),
+                ],
+                tracesSampleRate: 1.0,  // 100% of transactions traced
+            });
+        });
+    }
+};
+```
+
+<Note>
+  Sentry is loaded **dynamically** (not in the initial bundle) to avoid adding ~80–120 kB to the main chunk. It only initializes in `PROD` when `VITE_SENTRY_DSN` is set.
+</Note>
+
+| Configuration | Value |
+|---------------|-------|
+| `tracesSampleRate` | `1.0` — 100% of transactions |
+| `browserTracingIntegration` | Enabled |
+| Environment | Production only (`import.meta.env.PROD`) |
+| Activation | Requires `VITE_SENTRY_DSN` env variable |
+
+### Manual Error Capture
+
+```typescript
+export function logError(
+    category: string,
+    error: unknown,
+    extraDetails?: Record<string, unknown>
+): void
+```
+
+`logError` writes to **both** Supabase `app_logs` and Sentry simultaneously:
+
+```typescript
+// Example usage
+logError('payment', new Error('Mercado Pago timeout'), {
+    orderId: '...',
+    userId: '...'
+});
+```
+
+- Supabase: inserts a row into `app_logs` with level `'error'`, category, message, stack trace, and URL
+- Sentry: calls `Sentry.captureException` with the category as a tag and extra details
+
+## Google Analytics 4
+
+GA4 is loaded via script tag in `index.html` with measurement ID `G-XXXXXXXXXX` (must be replaced with the real ID before production).
+
+### E-commerce Events
+
+All events are implemented in `src/lib/analytics.ts`:
+
+```typescript
+// Page navigation
+export const pageView = (url: string) => {
+    window.gtag('config', GA_MEASUREMENT_ID, { page_path: url });
+};
+
+// Product detail view
+export const trackViewItem = (product: Product) => {
+    trackEvent({
+        action: 'view_item',
+        params: {
+            currency: 'MXN',
+            value: product.price,
+            items: [{ item_id: product.id, item_name: product.name, price: product.price }]
+        }
+    });
+};
+
+// Add to cart — also auto-triggered by cart.store.ts on addItem()
+export const trackAddToCart = (product: Product, quantity: number = 1) => {
+    trackEvent({
+        action: 'add_to_cart',
+        params: {
+            currency: 'MXN',
+            value: product.price * quantity,
+            items: [{ item_id: product.id, item_name: product.name,
+                      price: product.price, quantity }]
+        }
+    });
+};
+```
+
+| GA4 Event | Trigger |
+|-----------|--------|
+| `view_item` | Product detail page load |
+| `add_to_cart` | Item added to cart via `cart.store.addItem()` |
+| `begin_checkout` | Checkout page opened |
+| `purchase` | Order successfully created |
+| `ai_*` | AI interaction events via `trackAIInteraction()` |
+
+## useAppMonitoring Hook
+
+The `useAppMonitoring` hook is called in `App.tsx` to wire up presence tracking and global error capture for the entire session:
+
+```typescript
+export function useAppMonitoring() {
+    // Only activates on /admin/* routes
+    // Creates a Supabase Realtime presence channel on first admin visit
+    // Updates presence data on every route change within admin
+    // Captures window 'error' and 'unhandledrejection' events → logError()
+}
+```
+
+**Behavior:**
+- Presence channel is created once per session when the user first visits `/admin`
+- On each admin route navigation, `trackPresenceActivity` updates the user's current path
+- The channel is automatically unsubscribed when navigating away from admin
+- Global `window.error` and `window.unhandledrejection` events are captured and sent to `logError()`
+
+## Supabase Realtime Presence
+
+The monitoring page subscribes to the `store_monitoring` Realtime channel:
+
+```typescript
+const MONITORING_CHANNEL = 'store_monitoring'; // from monitoring.service.ts
+
+useEffect(() => {
+    const channel = supabase.channel(MONITORING_CHANNEL);
+    channel
+        .on('presence', { event: 'sync' }, () => handlePresenceSync(channel))
+        .subscribe();
+    return () => { channel.unsubscribe(); };
+}, [handlePresenceSync]);
+```
+
+Each connected user broadcasts:
+
+```typescript
+export interface ActiveUser {
+    id: string;           // Presence key (user.id or anon-XXXXX)
+    email: string;        // User email or 'Anónimo'
+    path: string;         // Current admin route e.g. '/admin/orders'
+    joined_at: string;    // ISO timestamp of initial connection
+    session_start: number; // Unix ms timestamp
+    last_active: number;   // Unix ms timestamp of last route change
+}
+```
+
+## App Logs (Supabase)
+
+Logs are stored in the `app_logs` table and streamed to `SystemLogsPanel` every 5 seconds:
+
+```typescript
+export async function getAppLogs(limit = 50): Promise<AppLog[]>
+// Selects: id, created_at, level, category, message, details, url, user_id, user_agent
+```
+
+```typescript
+export interface AppLog {
+    level: 'info' | 'warn' | 'error' | 'debug';
+    category: string;                // e.g. 'payment', 'runtime', 'promise_rejection'
+    message: string;
+    details?: Record<string, unknown>;
+    url?: string;                    // Page URL where log originated
+    user_id?: string;
+}
+```
+
+`logToSupabase(log)` automatically appends `user_agent` and current `window.location.href`.
+
+## Health Status Calculation
+
+The `HealthPulse` component and sidebar monitoring indicator derive system health from log data:
+
+```typescript
+const errorCount = logs.filter(l => l.level === 'error').length;
+const warnCount  = logs.filter(l => l.level === 'warn').length;
+const isSystemHealthy = errorCount === 0;
+```
+
+- `isSystemHealthy = true` → Green pulse, "Sistema OK"
+- `isSystemHealthy = false` → Red pulse, error count displayed
+
+Uptime is calculated from the moment the admin opened the monitoring page:
+
+```typescript
+const [sessionStart] = useState(() => Date.now());
+const uptimeMinutes = Math.floor((Date.now() - sessionStart) / 1000 / 60);
+```
+
+## Environment Setup
+
+```bash
+# .env
+VITE_SENTRY_DSN=https://xxxxx@o0.ingest.sentry.io/xxxxx
+```
+
+```html
+<!-- index.html — replace with real GA4 ID -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
+```

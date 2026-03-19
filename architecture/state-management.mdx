@@ -1,0 +1,309 @@
+---
+title: "State Management"
+description: "How VSM Store manages state across three layers: Zustand stores, React Context, and React Query server cache."
+---
+
+VSM Store uses three complementary state management approaches, each suited to a different category of data:
+
+| Layer | Library | Scope | Persistence |
+|---|---|---|---|
+| **Client stores** | Zustand | Cart items, in-app notifications | localStorage / in-memory |
+| **Auth & Theme** | React Context | Auth session, color theme | Supabase session / localStorage |
+| **Server state** | TanStack React Query | Products, orders, categories, etc. | In-memory cache (5 min stale) |
+
+## Zustand Stores
+
+### Cart Store (`src/stores/cart.store.ts`)
+
+The cart store manages the shopping cart with full persistence and cross-tab synchronisation.
+
+```typescript
+interface CartState {
+    // State
+    items: CartItem[];      // { product: Product; quantity: number; variant_id?: string | null; variant_name?: string | null }[]
+    isOpen: boolean;       // Cart sidebar visible
+    bundleOffer: SmartBundleOffer | null;  // Active AI bundle suggestion
+
+    // Actions
+    addItem: (product: Product, quantity?: number, variant?: { id: string; name: string } | null) => void;
+    removeItem: (productId: string, variantId?: string | null) => void;
+    updateQuantity: (productId: string, quantity: number, variantId?: string | null) => void;
+    clearCart: () => void;
+    toggleCart: () => void;
+    openCart: () => void;
+    closeCart: () => void;
+    loadOrderItems: (items: CartItem[]) => void;   // Re-order from history
+    validateCart: () => Promise<CartValidationResult>;  // Checks prices/stock against API
+
+    // Bundle actions
+    setBundleOffer: (offer: SmartBundleOffer | null) => void;
+    applyBundle: (product: Product, couponCode: string) => void;
+}
+```
+
+#### Persistence
+
+```typescript
+persist(
+    (set, get) => ({ /* store definition */ }),
+    {
+        name: 'vsm-cart',        // localStorage key
+        version: 2,              // Increment when CartItem shape changes
+        partialize: (state) => ({ items: state.items }),  // Only persist items, not isOpen
+        migrate: (persisted, version) => {
+            if (version < 2) return { items: [] };  // Wipe stale cart on schema change
+            return persisted as { items: CartItem[] };
+        },
+    }
+)
+```
+
+Only `items` is persisted — `isOpen` resets to `false` on every page load. The store uses schema versioning: if the saved version is older than `2`, the cart is cleared to avoid shape mismatches.
+
+#### Cross-Tab Synchronisation
+
+The store listens to the `storage` event so that cart changes in one browser tab are reflected in all other open tabs:
+
+```typescript
+window.addEventListener('storage', (e) => {
+    if (e.key === 'vsm-cart' && e.newValue) {
+        const parsed = JSON.parse(e.newValue);
+        if (/* shape validation */) {
+            useCartStore.setState({ items: parsed.state.items });
+        }
+    }
+});
+```
+
+#### Cart Validation
+
+`validateCart()` is called by the `useCartValidator` hook on app load. It fetches current product data from the API and:
+
+- **Removes** discontinued or inactive products
+- **Removes** out-of-stock items
+- **Updates** items whose prices have changed
+- **Clamps** quantities to the current stock level
+
+The validation result surfaces `CartValidationIssue[]` so the UI can notify the customer of any changes.
+
+#### Analytics Integration
+
+`addItem()` fires a GA4 `add_to_cart` event via a dynamic import:
+
+```typescript
+addItem: (product, quantity = 1, variant = null) => {
+    import('@/lib/analytics').then(({ trackAddToCart }) => {
+        trackAddToCart(product, quantity);
+    });
+    // ... state update
+}
+```
+
+#### Memoised Selectors
+
+Use these exported selectors in components to avoid unnecessary re-renders:
+
+```typescript
+// Sum of all item quantities
+export const selectTotalItems = (state: CartState) =>
+    state.items.reduce((sum, item) => sum + item.quantity, 0);
+
+// Subtotal: price × quantity, no discounts or shipping
+export const selectSubtotal = (state: CartState) =>
+    state.items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+
+// Currently identical to selectSubtotal
+// TODO: incorporate discounts and shipping when implemented
+export const selectTotal = selectSubtotal;
+```
+
+Usage in a component:
+
+```typescript
+import { useCartStore, selectTotalItems, selectSubtotal } from '@/stores/cart.store';
+
+function CartButton() {
+    const totalItems = useCartStore(selectTotalItems);
+    const subtotal = useCartStore(selectSubtotal);
+    // ...
+}
+```
+
+---
+
+### Notifications Store (`src/stores/notifications.store.ts`)
+
+In-memory notification centre with a 50-item LIFO cap. Not persisted — notifications are lost on page refresh.
+
+```typescript
+export type NotificationType = 'success' | 'error' | 'warning' | 'info';
+
+export interface Notification {
+    id: string;
+    type: NotificationType;
+    title: string;
+    message: string;
+    read: boolean;
+    timestamp: Date;
+    actionUrl?: string;
+    actionLabel?: string;
+    actionCallback?: () => void;
+}
+
+interface NotificationsState {
+    notifications: Notification[];
+    addNotification: (n: Omit<Notification, 'id' | 'read' | 'timestamp'>) => void;
+    removeNotification: (id: string) => void;
+    markAsRead: (id: string) => void;
+    markAllAsRead: () => void;
+    clearAll: () => void;
+}
+```
+
+`addNotification` automatically assigns a random `id`, sets `read: false`, and stamps `timestamp: new Date()`. New notifications are prepended (LIFO), and the list is sliced to 50:
+
+```typescript
+addNotification: (n) => {
+    const id = Math.random().toString(36).substring(2, 9);
+    const newNotification: Notification = { ...n, id, read: false, timestamp: new Date() };
+    set((state) => ({
+        notifications: [newNotification, ...state.notifications].slice(0, 50),
+    }));
+},
+```
+
+The notifications store is also used by React Query's global error handlers — any failed query or mutation that produces a user-visible error calls `useNotificationsStore.getState().addNotification(...)` directly (outside of React).
+
+---
+
+## React Context
+
+### AuthContext (`src/contexts/AuthContext.tsx`)
+
+Wraps Supabase auth state and the extended `customer_profiles` row. Provides:
+
+```typescript
+{
+    user: User | null;                  // Supabase auth user
+    profile: CustomerProfile | null;    // Extended profile from customer_profiles
+    loading: boolean;
+    signIn: (email, password) => Promise<AuthResponse>;
+    signUp: (email, password, fullName, phone?) => Promise<AuthResponse>;
+    signOut: () => void;
+}
+```
+
+Sessions are persisted by the Supabase JS client in `localStorage` automatically. `AuthProvider` subscribes to `supabase.auth.onAuthStateChange` to keep context in sync.
+
+### ThemeContext (`src/contexts/ThemeContext.tsx`)
+
+Manages dark/light mode:
+
+```typescript
+{
+    theme: 'dark' | 'light';
+    toggleTheme: () => void;
+    isDark: boolean;
+}
+```
+
+**Persistence:** `localStorage` key `vsm-theme`. The chosen theme is applied as a CSS class (`dark` or `light`) on the `<html>` element.
+
+<Note>
+  `main.tsx` currently force-applies the `dark` class and clears `vsm-theme` from localStorage as part of a stability recovery measure (`VSM_VERSION = 'W143-RECOVERY-A'`). Theme toggling via `ThemeContext` still works during the session.
+</Note>
+
+---
+
+## React Query — Server State
+
+All server data is managed by **TanStack React Query v5**. The `QueryClient` is configured in `src/lib/react-query.ts`:
+
+```typescript
+export const queryClient = new QueryClient({
+    queryCache: new QueryCache({
+        onError: (error, query) => {
+            logError('react_query', error, { queryKey: JSON.stringify(query.queryKey) });
+            if (query.state.data !== undefined) {
+                useNotificationsStore.getState().addNotification({
+                    type: 'error',
+                    title: 'Error de actualización',
+                    message: getErrorMessage(error)
+                });
+            }
+        },
+    }),
+    mutationCache: new MutationCache({
+        onError: (error) => {
+            logError('mutation', error);
+            useNotificationsStore.getState().addNotification({
+                type: 'error',
+                title: 'Error en la operación',
+                message: getErrorMessage(error)
+            });
+        },
+    }),
+    defaultOptions: {
+        queries: {
+            staleTime: 1000 * 60 * 5,  // 5 minutes
+            retry: 1,
+            refetchOnWindowFocus: false,
+        },
+    },
+});
+```
+
+### Key Behaviors
+
+| Setting | Value | Effect |
+|---|---|---|
+| `staleTime` | 5 minutes | Data is considered fresh for 5 min; no background refetch |
+| `retry` | 1 | Failed requests are retried once before erroring |
+| `refetchOnWindowFocus` | `false` | Tab focus does not trigger background refetches |
+| Cache scope | In-memory | All server state is lost on hard refresh |
+
+### Query Key Conventions
+
+| Hook | Query Key |
+|---|---|
+| `useProducts(options?)` | `['products', section, categoryId, limit]` |
+| `useFeaturedProducts(section?)` | `['products', 'featured', section]` |
+| `useProductBySlug(slug, section)` | `['products', 'detail', section, slug]` |
+| `useCustomerOrders(customerId)` | `['orders', customerId]` |
+| `useOrder(orderId)` | `['orders', 'detail', orderId]` |
+| `useCategories()` | `['categories']` |
+| `useAddresses()` | `['addresses']` |
+| `useStoreSettings()` | `['store-settings']` |
+| `useLoyalty()` | `['loyalty']` |
+| `useStats()` | `['stats']` |
+
+Mutations invalidate related query keys after success. For example, `useCreateOrder()` invalidates `['orders']` so the order list refreshes automatically.
+
+### Error Propagation
+
+Errors flow from React Query → Notifications Store → UI:
+
+1. A query or mutation fails
+2. `QueryCache.onError` / `MutationCache.onError` fires
+3. `logError()` persists the error to Sentry (production) and the monitoring service
+4. `addNotification()` adds an in-app error notification
+5. The `<ToastContainer>` component renders unread notifications as dismissible toasts
+
+---
+
+## Summary
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    State Layers                         │
+├──────────────────┬──────────────────┬───────────────────┤
+│   Zustand        │  React Context   │  React Query      │
+│  cart.store      │  AuthContext     │  useProducts      │
+│  notifications   │  ThemeContext    │  useOrders        │
+│  .store          │                  │  useCategories    │
+├──────────────────┼──────────────────┼───────────────────┤
+│ localStorage     │ Supabase session │ In-memory cache   │
+│ (vsm-cart)       │ localStorage     │ (5 min stale)     │
+│                  │ (vsm-theme)      │                   │
+└──────────────────┴──────────────────┴───────────────────┘
+```

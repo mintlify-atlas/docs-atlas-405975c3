@@ -1,0 +1,259 @@
+---
+title: "Admin Service"
+description: "Server-side data access layer for the admin panel, organized into functional modules covering auth, dashboard, products, categories, orders, customers, coupons, and storage."
+---
+
+The admin service is split across multiple files in `src/services/admin/`. Each file is a named module exporting async functions that call Supabase with explicit column selectors. All admin operations require the user to pass `checkIsAdmin()` — enforced by the `AdminGuard` component at the route level.
+
+## Auth
+
+### checkIsAdmin()
+
+```typescript
+// admin-auth.service.ts
+export async function checkIsAdmin(userId: string): Promise<boolean>
+```
+
+Verifies the user exists in the `admin_users` table. Returns `false` on any error, never throws.
+
+```typescript
+const isAdmin = await checkIsAdmin(user.id);
+if (!isAdmin) redirect('/login');
+```
+
+---
+
+## Dashboard
+
+Functions in `admin-dashboard.service.ts`.
+
+### getPulseMetrics()
+
+```typescript
+export async function getPulseMetrics(): Promise<PulseMetrics>
+
+interface PulseMetrics {
+    todaySales: number;       // Sum of order totals since midnight
+    activeOrders: number;     // Orders in pending/confirmado/preparando/en_camino
+    inventoryAlerts: number;  // Active products with stock < 5
+    status: 'optimal' | 'busy' | 'alert';
+}
+```
+
+Runs three parallel lightweight queries for the real-time System Pulse widget.
+
+### getDashboardStats()
+
+```typescript
+export async function getDashboardStats(
+    startDate?: string,
+    endDate?: string
+): Promise<DashboardStats>
+
+interface DashboardStats {
+    todaySales: number;
+    pendingOrders: number;
+    lowStockProducts: number;  // stock < 5
+    totalCustomers: number;
+    totalProducts: number;
+    totalOrders: number;
+    salesLast7Days: DailySales[];  // Array grouped by date
+    topProducts: TopProduct[];     // Top 5 by revenue in range
+}
+```
+
+Defaults to the last 7 days when no date range is provided.
+
+### getRecentOrders()
+
+```typescript
+export async function getRecentOrders(limit?: number): Promise<AdminOrder[]>
+```
+
+Returns recent orders with customer name and phone resolved from joined `customer_profiles` and `addresses` tables.
+
+### getDashboardPulse()
+
+```typescript
+export async function getDashboardPulse(
+    stats: DashboardStats
+): Promise<{ narrative: string; anomalies: string[]; health_score: number }>
+```
+
+Calls the `dashboard-intelligence` edge function with current stats. Returns an AI-generated executive narrative, anomaly list, and 0–100 health score.
+
+### searchCommandPalette()
+
+```typescript
+export async function searchCommandPalette(query: string): Promise<{
+    products: { id: string; name: string }[];
+    orders: { id: string; order_number: string }[];
+    customers: { id: string; full_name: string; email: string }[];
+    errors: Record<string, unknown>;
+}>
+```
+
+Global search across products, orders, and customers — used by the admin command palette (⌘K).
+
+---
+
+## Products
+
+Functions in `admin-products.service.ts`.
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `getAllProducts()` | `(): Promise<ProductRow[]>` | All products ordered by `created_at DESC`, including `specs`, `badges`, AI fields |
+| `getProductById(id)` | `(id: string): Promise<ProductRow>` | Single product with full variant tree |
+| `createProduct(product)` | `(product: ProductFormData): Promise<...>` | Inserts and returns `id, name, slug, price, stock, sku, section, category_id, is_active` |
+| `updateProduct(id, product)` | `(id: string, data: Partial<ProductFormData>): Promise<...>` | Partial update |
+| `deleteProduct(id)` | `(id: string): Promise<void>` | Soft delete — sets `is_active = false` |
+| `toggleProductFlag(id, flag, value)` | `(id: string, flag: 'is_featured'\|'is_new'\|'is_bestseller'\|'is_active', value: boolean)` | Toggles a single boolean flag |
+| `uploadProductImage(file)` | `(file: File): Promise<string>` | Uploads to `product-images` Storage bucket, returns public URL |
+| `bulkUpdateProducts(updates)` | `(updates: { id: string; updates: Partial<ProductFormData> }[]): Promise<...>` | Batch update via `Promise.all` |
+| `generateProductCopy(name, desc?)` | `(name: string, desc?: string): Promise<{ description, short_description, tags }>` | AI copy generation via `product-intelligence` edge function |
+
+### ProductFormData
+
+```typescript
+interface ProductFormData {
+    name: string;
+    slug: string;
+    description: string;
+    short_description: string;
+    price: number;
+    compare_at_price: number | null;
+    stock: number;
+    sku: string;
+    section: Section;
+    category_id: string;
+    tags: string[];
+    status: ProductStatus;
+    images: string[];
+    cover_image: string | null;
+    is_featured: boolean;
+    is_featured_until: string | null;
+    is_new: boolean;
+    is_new_until: string | null;
+    is_bestseller: boolean;
+    is_bestseller_until: string | null;
+    is_active: boolean;
+    specs: Record<string, string>;
+    badges: string[];
+    ai_sales_note: string | null;
+    ai_is_featured: boolean;
+    ai_exclude: boolean;
+    variants?: ProductVariant[];
+}
+```
+
+---
+
+## Categories
+
+Functions in `admin-categories.service.ts`.
+
+| Function | Description |
+|----------|-------------|
+| `getAllCategories()` | All categories ordered by `section`, then `order_index` |
+| `createCategory(data)` | Insert new category |
+| `updateCategory(id, data)` | Partial update |
+| `deleteCategory(id)` | Hard delete — a DB trigger re-parents children and moves orphaned products |
+| `toggleCategoryActive(id, flag)` | Toggle `is_active` |
+
+---
+
+## Orders
+
+Functions in `admin-orders.service.ts`.
+
+| Function | Description |
+|----------|-------------|
+| `getAllOrders(statusFilter?)` | All orders with joined customer name/phone. Optional status filter. |
+| `updateOrderStatus(orderId, status)` | Updates status; auto-sets `payment_status = 'paid'` for `processing`, `shipped`, `delivered` |
+| `updateOrderPaymentStatus(orderId, paymentStatus)` | Manual payment status override |
+| `updateOrderTracking(orderId, trackingNumber)` | Sets `tracking_notes` field |
+| `exportOrdersToCSV(orders)` | Client-side CSV download with UTF-8 BOM |
+
+### OrderStatus values
+
+```typescript
+// From lib/domain/orders
+type AdminOrderStatus = 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+```
+
+---
+
+## Customers
+
+Functions in `admin-customers.service.ts`. Reads from the `customer_intelligence_360` view for enriched CRM data.
+
+| Function | Description |
+|----------|-------------|
+| `getAllCustomers()` | All customers from `customer_intelligence_360` view with RFM segment and health status |
+| `getAdminCustomerDetails(id)` | Full customer detail: profile + orders summary + addresses + admin notes + evidence files |
+| `getCustomerOrders(id)` | Order history for a specific customer |
+| `getCustomerPreferences(id)` | Top 5 products and categories by purchase volume |
+| `createCustomerWithDetails(data)` | Creates Auth user + profile + address via a temp Supabase client (preserves admin session) |
+| `updateAdminCustomerNotes(id, data)` | Upsert CRM notes, tags, custom fields |
+| `uploadCustomerEvidence(id, file)` | Upload file to `customer-evidence` Storage bucket |
+| `updateCustomerStatus(id, status, end?)` | God Mode: set `active`, `suspended`, or `banned` |
+| `sendCustomerNotification(id, title, msg, type)` | Insert into `user_notifications` table |
+| `getCustomerWishlist(id)` | Wishlist items with joined product data |
+| `suggestCustomerTags(id)` | AI tag suggestions via `customer-intelligence` edge function |
+
+---
+
+## Coupons
+
+Functions in `admin-coupons.service.ts`.
+
+| Function | Description |
+|----------|-------------|
+| `getAllCoupons()` | All coupons ordered by code |
+| `createCoupon(data)` | Insert new coupon with `used_count = 0` |
+| `updateCoupon(code, data)` | Partial update by coupon code |
+| `deleteCoupon(code)` | Soft delete — sets `is_active = false` |
+| `generateCouponMagic(goal)` | AI-generated coupon suggestion via `marketing-intelligence` edge function |
+| `forecastCouponImpact(coupon)` | AI impact analysis via `marketing-intelligence` edge function |
+
+### AdminCoupon
+
+```typescript
+interface AdminCoupon {
+    code: string;
+    description: string | null;
+    discount_type: 'percentage' | 'fixed';
+    discount_value: number;
+    min_purchase: number;
+    max_uses: number | null;
+    used_count: number;
+    is_active: boolean;
+    valid_from: string | null;
+    valid_until: string | null;
+    created_at?: string;
+}
+```
+
+---
+
+## Storage
+
+Product image upload lives in `admin-products.service.ts`:
+
+```typescript
+export async function uploadProductImage(file: File): Promise<string>
+```
+
+Uploads to the `product-images` bucket under the `raw/` prefix with a timestamp-randomized filename. Returns the public URL via `getPublicUrl()`.
+
+Customer evidence upload is in `admin-customers.service.ts`:
+
+```typescript
+export async function uploadCustomerEvidence(
+    customerId: string,
+    file: File
+): Promise<string> // returns filePath
+```
+
+Uploads to the `customer-evidence` bucket under `{customerId}/` prefix.

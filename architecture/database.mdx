@@ -1,0 +1,261 @@
+---
+title: "Database Schema"
+description: "All Supabase tables, TypeScript types, RLS security model, and migration history for VSM Store."
+---
+
+VSM Store uses **Supabase** (managed PostgreSQL) as its only data store. All tables have Row Level Security (RLS) enabled. The schema is managed through SQL migration files in `supabase/migrations/`.
+
+## Core Tables
+
+### `products`
+
+The main product catalog. Supports two catalog sections, expiring badge flags, and variant-ready structure.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `name` | `text` | Product display name |
+| `slug` | `text` | URL-safe identifier (unique per section) |
+| `description` | `text \| null` | Long-form HTML/markdown description |
+| `short_description` | `text \| null` | One-line summary |
+| `price` | `numeric` | Current price in MXN |
+| `compare_at_price` | `numeric \| null` | Strike-through original price |
+| `stock` | `integer` | Available units |
+| `sku` | `text \| null` | Stock-keeping unit |
+| `section` | `'vape' \| '420'` | Catalog section |
+| `category_id` | `uuid` | FK → `categories.id` |
+| `tags` | `text[]` | Searchable tag array |
+| `images` | `text[]` | Array of image URLs |
+| `cover_image` | `text \| null` | Primary display image |
+| `status` | `ProductStatus` | See enum below |
+| `is_featured` | `boolean` | Shown in featured section |
+| `is_featured_until` | `timestamptz \| null` | Auto-expiry for featured badge |
+| `is_new` | `boolean` | Shown in new arrivals |
+| `is_new_until` | `timestamptz \| null` | Auto-expiry for new badge |
+| `is_bestseller` | `boolean` | Shown in bestsellers |
+| `is_bestseller_until` | `timestamptz \| null` | Auto-expiry for bestseller badge |
+| `is_active` | `boolean` | Whether product is visible in storefront |
+| `created_at` | `timestamptz` | Row creation timestamp |
+| `updated_at` | `timestamptz` | Last modification timestamp |
+
+```typescript
+interface Product {
+    id: string; name: string; slug: string;
+    description: string | null; short_description: string | null;
+    price: number; compare_at_price: number | null;
+    stock: number; sku: string | null;
+    section: 'vape' | '420'; category_id: string;
+    tags: string[]; status: 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+    images: string[]; cover_image: string | null;
+    is_featured: boolean; is_featured_until: string | null;
+    is_new: boolean; is_new_until: string | null;
+    is_bestseller: boolean; is_bestseller_until: string | null;
+    is_active: boolean;
+    created_at: string; updated_at: string;
+}
+```
+
+### `categories`
+
+Hierarchical categories. Parent–child relationships use self-referential `parent_id`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `name` | `text` | Display name |
+| `slug` | `text` | URL slug |
+| `section` | `'vape' \| '420'` | Which catalog section this belongs to |
+| `parent_id` | `uuid \| null` | FK → `categories.id` (null = top-level) |
+| `order_index` | `integer` | Manual sort order |
+| `is_active` | `boolean` | Whether visible in storefront |
+
+```typescript
+interface Category {
+    id: string; name: string; slug: string;
+    section: Section; parent_id: string | null;
+    order_index: number; is_active: boolean;
+}
+```
+
+### `customer_profiles`
+
+Extended user data linked to `auth.users`. Created on signup via `createCustomerProfile()`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | PK = `auth.uid()` |
+| `full_name` | `text` | Display name |
+| `phone` | `text \| null` | Phone number |
+| `whatsapp` | `text \| null` | WhatsApp number |
+| `birthdate` | `date \| null` | Date of birth |
+| `customer_tier` | `text` | `'bronze' \| 'silver' \| 'gold' \| 'platinum'` |
+| `total_orders` | `integer` | Lifetime order count |
+| `total_spent` | `numeric` | Lifetime spend in MXN |
+| `account_status` | `text` | `'active' \| 'suspended' \| 'banned'` |
+
+```typescript
+interface CustomerProfile {
+    id: string; full_name: string;
+    phone: string | null; whatsapp: string | null;
+    birthdate: string | null;
+    customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+    total_orders: number; total_spent: number;
+}
+```
+
+### `orders`
+
+Order records created at checkout. `items` is a JSONB column storing the full `CartItem[]` snapshot.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `order_number` | `text` | Auto-generated human-readable number |
+| `customer_id` | `uuid` | FK → `auth.users.id` |
+| `items` | `jsonb` | Snapshot of `CartItem[]` at order time |
+| `subtotal` | `numeric` | Pre-discount total |
+| `shipping_cost` | `numeric` | Shipping fee in MXN |
+| `discount` | `numeric` | Applied discount amount |
+| `total` | `numeric` | Final amount charged |
+| `status` | `OrderStatus` | See enum below |
+| `payment_method` | `text` | `'whatsapp' \| 'mercadopago' \| 'cash' \| 'transfer'` |
+| `payment_status` | `text` | `'pending' \| 'paid' \| 'failed' \| 'refunded'` |
+| `mp_preference_id` | `text \| null` | Mercado Pago preference ID |
+| `whatsapp_sent` | `boolean` | Whether WhatsApp order message was sent |
+
+### `addresses`
+
+Customer shipping and billing addresses.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `customer_id` | `uuid` | FK → `auth.users.id` |
+| `type` | `text` | `'shipping' \| 'billing'` |
+| `street` | `text` | Street address |
+| `city` | `text` | City |
+| `state` | `text` | State/province |
+| `zip_code` | `text` | Postal code |
+| `is_default` | `boolean` | Whether this is the default address |
+
+### `coupons`
+
+Discount codes applicable at checkout.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `code` | `text` | The coupon code customers enter |
+| `discount_type` | `text` | `'fixed' \| 'percent'` |
+| `discount_value` | `numeric` | Amount or percentage to deduct |
+| `min_purchase` | `numeric` | Minimum order total to apply |
+| `max_uses` | `integer` | Usage limit (null = unlimited) |
+
+### `loyalty_points`
+
+Appendable ledger of loyalty point transactions. Balance is derived by summing rows.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `customer_id` | `uuid` | FK → `auth.users.id` |
+| `points` | `integer` | Points earned or burned (positive = earned) |
+| `transaction_type` | `text` | `'earned' \| 'burned'` |
+| `order_id` | `uuid \| null` | FK → `orders.id` (if earned from order) |
+| `description` | `text` | Human-readable reason |
+
+Loyalty points accrue at **10 points per $100 MXN** spent. Balance is queried via a Supabase RPC function.
+
+### `admin_users`
+
+Simple role table. Presence of a row grants admin access via `AdminGuard`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | PK = `auth.uid()` |
+| `role` | `text` | `'admin'` (extensible for future roles) |
+
+### `store_settings`
+
+Key-value store for dynamic store configuration managed from the admin panel.
+
+| Column | Type | Description |
+|---|---|---|
+| `key` | `text` | Setting identifier (primary key) |
+| `value` | `jsonb` | Setting value (any JSON type) |
+| `updated_at` | `timestamptz` | Last modification timestamp |
+
+## Type Definitions
+
+### Section
+
+```typescript
+// src/types/constants.ts
+type Section = 'vape' | '420';
+```
+
+- **`vape`** — Mods, Atomizadores, Líquidos, Coils, Accesorios Vape
+- **`420`** — Vaporizers, Fumables, Comestibles, Concentrados, Tópicos, Accesorios 420
+
+### ProductStatus
+
+```typescript
+// src/types/constants.ts
+type ProductStatus = 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+```
+
+| Status | Behavior |
+|---|---|
+| `active` | Visible and purchasable |
+| `legacy` | Visible but no longer sold |
+| `discontinued` | Cannot be added to cart (`addItem` guards against this) |
+| `coming_soon` | Visible but not yet purchasable |
+
+### OrderStatus
+
+```typescript
+type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+```
+
+## RLS Security Model
+
+All tables have **Row Level Security (RLS) enabled**. The `admin_users` table acts as the permission gatekeeper.
+
+| Scope | Policy |
+|---|---|
+| **Customers** | Can only read/write their own rows in `customer_profiles`, `orders`, `addresses`, `loyalty_points` |
+| **Public** | Can read `products` (active only) and `categories` (active only) |
+| **Admins** | Have full access to all tables via policies that check `EXISTS (SELECT 1 FROM admin_users WHERE id = auth.uid())` |
+| **Anon** | Can read public product/category data; cannot write to any table |
+
+The anonymous key used client-side can only perform what RLS policies allow — there is no way to bypass them from the browser.
+
+## Migration History
+
+All 52 migration files live in `supabase/migrations/`. The table below covers the foundational migrations:
+
+| File | Purpose |
+|---|---|
+| `001_initial_schema.sql` | Core schema: products, categories, orders, addresses, coupons (27 KB) |
+| `002_users_system.sql` | `customer_profiles` table and auth triggers |
+| `003_admin_users.sql` | `admin_users` table + RLS policies |
+| `20240214_add_payment_fields.sql` | Mercado Pago preference fields on orders |
+| `20260216145500_create_store_settings.sql` | `store_settings` key-value table |
+| `20260216_admin_customer_notes.sql` | Admin notes system for CRM |
+| `20260216_bank_account_info.sql` | Bank transfer info in store settings |
+| `20260216_expiring_badges_and_cover.sql` | `is_*_until` expiry columns + `cover_image` |
+| `20260216_god_mode_notifications.sql` | Admin God Mode notification system |
+| `20260216_monitoring_system.sql` | App health monitoring infrastructure |
+| `20260306_product_variations.sql` | Product variant system |
+| `20260302_flash_deals.sql` | Flash deals / limited-time promotions |
+| `20260304_customer_wishlists.sql` | Customer wishlist persistence |
+| `20260308_loyalty_referrals.sql` | Referral system for loyalty program |
+| `20260310_wheel_system.sql` | Spin-the-wheel loyalty game |
+| `20260312_neural_search_infra.sql` | Vector search infrastructure for AI |
+| `20260315_cesarin_os.sql` | CesarinOS AI admin assistant |
+| `20260317_admin_refactor_phase_1.sql` | Admin panel DB refactor |
+| `20260317_store_knowledge.sql` | Store knowledge base for AI functions |
+
+<Note>
+  Migrations are append-only. Never modify or delete existing migration files — add new ones instead.
+</Note>

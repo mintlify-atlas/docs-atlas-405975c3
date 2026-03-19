@@ -1,0 +1,127 @@
+---
+title: "Admin Panel Overview"
+description: "Architecture, access control, and routing for the VSM Store admin panel — integrated into the same SPA at /admin/*."
+---
+
+The VSM Store admin panel is **not a separate application**. It lives inside the same React SPA as the storefront, separated by route prefix (`/admin/*`), lazy loading, and its own layout components. No storefront `Header` or `Footer` renders inside admin routes.
+
+## Architecture
+
+<CardGroup cols={2}>
+  <Card title="Code Split Chunk" icon="box">
+    All admin pages are bundled into a single lazy-loaded chunk named `admin-panel`, configured in `vite.config.ts` via `manualChunks`. The chunk only loads when a user first navigates to `/admin`.
+  </Card>
+  <Card title="AdminGuard" icon="shield">
+    Every admin route is wrapped with `AdminGuard`, which verifies the authenticated user exists in the `admin_users` table. Non-admins are redirected; unauthenticated users go to `/login`.
+  </Card>
+  <Card title="AdminLayout" icon="layout-dashboard">
+    Admin pages render inside `AdminLayout` — a distinct shell with a collapsible sidebar, breadcrumb header, omnisearch, and system-pulse indicator. No storefront chrome is present.
+  </Card>
+  <Card title="Supabase RLS" icon="database">
+    Row Level Security policies on every table ensure admin operations are gated at the database level, not only in the UI.
+  </Card>
+</CardGroup>
+
+## How Access Works
+
+<Steps>
+  <Step title="User logs in">
+    The user authenticates via Supabase Auth. `AuthContext` loads their session and `customer_profiles` record.
+  </Step>
+  <Step title="Navigate to /admin">
+    React Router renders `AdminGuard` wrapping `AdminLayout`. The guard calls `checkIsAdmin(user.id)` from `admin-auth.service.ts`.
+  </Step>
+  <Step title="admin_users table check">
+    `checkIsAdmin` queries the `admin_users` table:
+    ```typescript
+    export async function checkIsAdmin(userId: string): Promise<boolean> {
+        const { data, error } = await supabase
+            .from('admin_users')
+            .select('id, role')
+            .eq('id', userId)
+            .single();
+
+        if (error || !data) return false;
+        return true;
+    }
+    ```
+  </Step>
+  <Step title="Guard decision">
+    - If admin → renders `AdminLayout` with the requested page.
+    - If not admin → shows an "Access Denied" screen with a link back to the storefront.
+    - If not logged in → `<Navigate to="/login" replace />`.
+    - If check times out after 8 seconds → shows a debug/retry screen.
+  </Step>
+</Steps>
+
+<Note>
+  The guard has an 8-second timeout safety net. If Supabase does not respond within that window, the user sees a retry dialog rather than an infinite spinner.
+</Note>
+
+## Granting Admin Access
+
+Insert a row into `admin_users` where `id` matches the user's Supabase Auth UUID:
+
+```sql
+-- Grant admin access to a specific user
+INSERT INTO admin_users (id, role)
+VALUES ('<supabase-auth-uuid>', 'admin');
+
+-- Verify the record
+SELECT * FROM admin_users WHERE id = '<supabase-auth-uuid>';
+```
+
+<Warning>
+  The `id` column must exactly match the UUID from `auth.users`. Mismatched IDs will result in `checkIsAdmin` returning `false` and the user being denied access.
+</Warning>
+
+## Admin Routes
+
+All routes are prefixed with `/admin` and rendered inside `AdminGuard` + `AdminLayout`.
+
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/admin` | `AdminDashboard` | Main dashboard — metrics, charts, AI insights |
+| `/admin/products` | `AdminProducts` | Product list with filtering and bulk actions |
+| `/admin/products/new` | `AdminProductForm` | Create a new product |
+| `/admin/products/:id` | `AdminProductForm` | Edit an existing product |
+| `/admin/orders` | `AdminOrders` | Order management with Kanban and list views |
+| `/admin/categories` | `AdminCategories` | Category tree management |
+| `/admin/customers` | `AdminCustomers` | Customer directory |
+| `/admin/customers/:id` | `AdminCustomerDetails` | Full customer profile and history |
+| `/admin/coupons` | `AdminCoupons` | Coupon CRUD |
+| `/admin/settings` | `AdminSettings` | Store configuration |
+| `/admin/monitoring` | `AdminMonitoring` | System health and live users |
+
+## AdminLayout Structure
+
+The sidebar is organized into five sections:
+
+| Section | Items |
+|---------|-------|
+| **Operaciones** | Dashboard, Pedidos, Clientes |
+| **Inventario** | Productos, Categorías, Marcas, Etiquetas, Atributos, Batch Manager |
+| **Vitrina** | Editor Home, MegaHero Sliders, Ofertas Flash, Testimonios |
+| **Retención** | V-Coins (Lealtad), Cupones, Ruleta de Premios |
+| **Sistema** | Cesarin OS, Configuración, Monitoreo |
+
+The **Monitoreo** item shows a color-coded live ping in the sidebar based on current system pulse:
+- Green dot → `optimal`
+- Amber dot → `busy` (>10 active orders)
+- Red dot → `alert` (any products with stock < 5)
+
+## Code Splitting Configuration
+
+```typescript
+// vite.config.ts — manualChunks
+{
+  'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+  'vendor-query': ['@tanstack/react-query'],
+  'vendor-supabase': ['@supabase/supabase-js'],
+  'vendor-icons': ['lucide-react'],
+  'admin-panel': [/src\/pages\/admin\//],  // Entire admin panel
+  'legal-pages': [/src\/pages\/legal\//],
+}
+```
+
+The `admin-panel` chunk is loaded lazily via `React.lazy()` in `App.tsx`, so the admin JavaScript is never downloaded by regular storefront visitors.

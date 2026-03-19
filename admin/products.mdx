@@ -1,0 +1,242 @@
+---
+title: "Product Management"
+description: "Full CRUD for products, image upload, product flags with time-expiry, bulk operations, and AI copy generation."
+---
+
+Products are managed at `/admin/products`. The page uses a thin orchestrator pattern — `AdminProducts` delegates all data logic to the `useAdminProducts` hook, and rendering to lego components: `ProductsHeader`, `ProductsFilter`, `ProductsTable`, and `ProductEditorDrawer`.
+
+## Routes
+
+| Route | Component | Purpose |
+|-------|-----------|--------|
+| `/admin/products` | `AdminProducts` | Paginated list, filtering, bulk actions |
+| `/admin/products/new` | `AdminProductForm` | Create a new product |
+| `/admin/products/:id` | `AdminProductForm` | Edit an existing product |
+
+## Product Data Shape
+
+```typescript
+export interface ProductFormData {
+    name: string;
+    slug: string;
+    description: string;
+    short_description: string;
+    price: number;
+    compare_at_price: number | null;
+    stock: number;
+    sku: string;
+    section: 'vape' | '420';
+    category_id: string;
+    tags: string[];
+    status: ProductStatus;          // 'active' | 'legacy' | 'discontinued' | 'coming_soon'
+    images: string[];               // Array of public URLs
+    cover_image: string | null;
+    is_featured: boolean;
+    is_featured_until: string | null;     // ISO timestamp — flag expires at this time
+    is_new: boolean;
+    is_new_until: string | null;
+    is_bestseller: boolean;
+    is_bestseller_until: string | null;
+    is_active: boolean;
+    specs: Record<string, string>;        // Structured specifications
+    badges: string[];                     // Display badges e.g. ['Sale', 'Limited']
+    ai_sales_note: string | null;         // AI-generated selling note
+    ai_is_featured: boolean;              // AI recommendation to feature
+    ai_exclude: boolean;                  // Exclude from AI recommendations
+    variants?: ProductVariant[];
+}
+```
+
+## Product Status Values
+
+```typescript
+type ProductStatus = 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+```
+
+| Value | Description |
+|-------|-------------|
+| `active` | Available for purchase, visible in the storefront |
+| `legacy` | Still listed but de-emphasized; older product line |
+| `discontinued` | No longer sold; hidden from active catalog |
+| `coming_soon` | Announced but not yet available to purchase |
+
+## CRUD Functions
+
+### getAllProducts
+
+```typescript
+export async function getAllProducts(): Promise<ProductFormData[]>
+```
+
+Fetches all products ordered by `created_at` descending. Returns all fields including `specs`, `badges`, `ai_sales_note`, `ai_is_featured`, and `ai_exclude`.
+
+### createProduct
+
+```typescript
+export async function createProduct(
+    product: ProductFormData
+): Promise<{ id: string; name: string; slug: string; price: number; stock: number; sku: string; section: string; category_id: string; is_active: boolean }>
+```
+
+### updateProduct
+
+```typescript
+export async function updateProduct(
+    id: string,
+    product: Partial<ProductFormData>
+): Promise<{ id: string; name: string; slug: string; price: number; stock: number; sku: string; section: string; category_id: string; is_active: boolean }>
+```
+
+### deleteProduct
+
+```typescript
+export async function deleteProduct(id: string): Promise<void>
+```
+
+<Note>
+  `deleteProduct` is a **soft delete** — it sets `is_active = false` on the record rather than removing it from the database. This preserves order history referencing the product.
+</Note>
+
+### toggleProductFlag
+
+```typescript
+export async function toggleProductFlag(
+    id: string,
+    flag: 'is_featured' | 'is_new' | 'is_bestseller' | 'is_active',
+    value: boolean
+): Promise<void>
+```
+
+Used by the `ProductsTable` row toggle controls to flip a single boolean flag without a full form submission.
+
+## Time-Expiring Product Flags
+
+The `is_featured`, `is_new`, and `is_bestseller` flags each have a companion timestamp column:
+
+| Flag | Expiry Column | Behavior |
+|------|---------------|----------|
+| `is_featured` | `is_featured_until` | Product stops appearing in featured sections after this timestamp |
+| `is_new` | `is_new_until` | "New" badge disappears after this timestamp |
+| `is_bestseller` | `is_bestseller_until` | "Bestseller" badge disappears after this timestamp |
+
+Set the expiry column to a future ISO timestamp when enabling a flag. Set it to `null` for a permanent flag.
+
+```typescript
+// Example: Feature a product for 30 days
+const thirtyDaysOut = new Date();
+thirtyDaysOut.setDate(thirtyDaysOut.getDate() + 30);
+
+await updateProduct(productId, {
+    is_featured: true,
+    is_featured_until: thirtyDaysOut.toISOString(),
+});
+```
+
+## Image Upload
+
+Images are uploaded to the `product-images` Supabase Storage bucket under the `raw/` prefix:
+
+```typescript
+export async function uploadProductImage(file: File): Promise<string> {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+    const filePath = `raw/${fileName}`;
+
+    const { error } = await supabase.storage
+        .from('product-images')
+        .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false
+        });
+
+    if (error) throw error;
+
+    const { data: publicUrlData } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(filePath);
+
+    return publicUrlData.publicUrl;
+}
+```
+
+Filenames are generated with `Date.now()` plus a random suffix to prevent collisions. The returned public URL is stored in the `images` array or `cover_image` field of the product.
+
+## Section and Category Assignment
+
+Every product belongs to one of two catalog sections:
+
+```typescript
+type Section = 'vape' | '420';
+```
+
+- **`vape`** — Mods, Atomizadores, Líquidos, Coils, Accesorios Vape
+- **`420`** — Vaporizers, Fumables, Comestibles, Concentrados, Tópicos, Accesorios 420
+
+The `category_id` field references a row in the `categories` table. Categories are hierarchical — a category may have a `parent_id` pointing to a parent category. The section of the category must match the product's section.
+
+## Bulk Operations
+
+The `ProductsTable` supports multi-select. When rows are selected, a floating action bar appears with:
+
+- **Activar** — Bulk `is_active = true`
+- **Desactivar** — Bulk `is_active = false`
+- **Magic Sync (IA)** — Bulk AI copy generation via `product-intelligence` edge function
+
+Bulk updates use `bulkUpdateProducts`:
+
+```typescript
+export async function bulkUpdateProducts(
+    updates: { id: string; updates: Partial<ProductFormData> }[]
+): Promise<void>
+```
+
+This runs all updates concurrently with `Promise.all`. If any single update fails, the entire operation throws.
+
+## AI Copy Generation
+
+```typescript
+export async function generateProductCopy(
+    name: string,
+    currentDesc?: string
+): Promise<{ description: string; short_description: string; tags: string[] }>
+```
+
+Calls the `product-intelligence` Supabase Edge Function with `action: 'generate_copy'`. Returns AI-generated `description`, `short_description`, and suggested `tags` based on the product name and optional existing description.
+
+## Product Editor Drawer
+
+The `ProductEditorDrawer` component renders as a slide-in panel. It is used for both create (no `id` passed) and edit (existing product passed) workflows — keeping the list view in context while editing.
+
+Duplicate a product by cloning its data without the `id`:
+
+```typescript
+const handleDuplicate = (product: Product) => {
+    const clone: Product = {
+        ...product,
+        id: '',
+        name: `${product.name} (Copia)`,
+        slug: `${product.slug}-copia`,
+    };
+    setEditingProduct(clone);
+    setIsEditorOpen(true);
+};
+```
+
+## CSV Export
+
+The products list supports export to CSV via a button in `ProductsHeader`:
+
+```typescript
+const handleExportCSV = () => {
+    const headers = ['Nombre', 'SKU', 'Seccion', 'Precio', 'Stock', 'Activo'];
+    // Creates productos_vsm_YYYY-MM-DD.csv
+};
+```
+
+## Filtering
+
+The `ProductsFilter` component exposes:
+- **Search** — filters by product name (client-side)
+- **Section** — `vape`, `420`, or all
+- **Show Inactive** — toggle to include soft-deleted / inactive products
+- **Quick Filter** — Featured, New, Bestseller, Low Stock shortcuts

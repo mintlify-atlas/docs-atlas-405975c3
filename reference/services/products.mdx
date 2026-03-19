@@ -1,0 +1,307 @@
+---
+title: "Products Service"
+description: "Storefront data access functions for querying products, variants, and search from the Supabase database."
+---
+
+All functions are located in `src/services/products.service.ts`. They query the `products` table with nested variant data and enforce `is_active = true`, `status = 'active'`, and `stock > 0` by default for storefront display.
+
+## GetProductsOptions
+
+```typescript
+interface GetProductsOptions {
+    section?: Section;                          // 'vape' | '420'
+    categoryId?: string | string[];             // single ID or array for multi-category
+    limit?: number;                             // default 50
+    offset?: number;                            // default 0 (used with range pagination)
+    filter?: 'featured' | 'new' | 'bestseller'; // maps to boolean flag columns
+}
+```
+
+When `filter` is provided, `limit` is applied via `.limit()` and `offset` is ignored. Without `filter`, `.range(offset, offset + limit - 1)` is used for cursor-style pagination.
+
+---
+
+## getProducts()
+
+```typescript
+export async function getProducts(
+    options: GetProductsOptions = {}
+): Promise<Product[]>
+```
+
+Fetches active storefront products with full variant data. Results are ordered by `created_at DESC`.
+
+<ParamField path="options" type="GetProductsOptions">
+  Optional filtering and pagination configuration.
+  <Expandable title="properties">
+    <ParamField path="section" type="'vape' | '420'">
+      Filter products to a specific store section.
+    </ParamField>
+    <ParamField path="categoryId" type="string | string[]">
+      Filter by one category ID or an array of category IDs.
+    </ParamField>
+    <ParamField path="limit" type="number">
+      Maximum number of products to return. Defaults to `50`.
+    </ParamField>
+    <ParamField path="offset" type="number">
+      Number of rows to skip for pagination. Defaults to `0`. Ignored when `filter` is set.
+    </ParamField>
+    <ParamField path="filter" type="'featured' | 'new' | 'bestseller'">
+      Apply a boolean flag filter. Maps to `is_featured`, `is_new`, or `is_bestseller` columns.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="Product[]" type="array">
+  Array of `Product` objects with nested `variants` and variant `options`. See [Types reference](/reference/types).
+</ResponseField>
+
+<CodeGroup>
+```typescript Storefront grid
+import { getProducts } from '@/services';
+
+// All vape products, first 50
+const vapeProducts = await getProducts({ section: 'vape' });
+
+// 420 section with pagination
+const page2 = await getProducts({ section: '420', limit: 20, offset: 20 });
+
+// Single category
+const liquidos = await getProducts({
+    section: 'vape',
+    categoryId: 'uuid-here',
+    limit: 30,
+});
+
+// Multiple categories
+const mixed = await getProducts({
+    categoryId: ['uuid-1', 'uuid-2'],
+});
+```
+</CodeGroup>
+
+---
+
+## getFeaturedProducts()
+
+```typescript
+export async function getFeaturedProducts(
+    section?: Section
+): Promise<Product[]>
+```
+
+Convenience wrapper for `getProducts({ section, filter: 'featured' })`. Returns all products where `is_featured = true`.
+
+<ParamField path="section" type="'vape' | '420'">
+  Optional section filter. Omit to return featured products from both sections.
+</ParamField>
+
+```typescript
+const featuredVape = await getFeaturedProducts('vape');
+const allFeatured = await getFeaturedProducts();
+```
+
+---
+
+## getNewProducts()
+
+```typescript
+export async function getNewProducts(
+    section?: Section
+): Promise<Product[]>
+```
+
+Wrapper for `getProducts({ section, filter: 'new' })`. Returns products where `is_new = true`.
+
+```typescript
+const newIn420 = await getNewProducts('420');
+```
+
+---
+
+## getBestsellerProducts()
+
+```typescript
+export async function getBestsellerProducts(
+    options: { section?: Section; limit?: number } = {}
+): Promise<Product[]>
+```
+
+Wrapper for `getProducts({ section, filter: 'bestseller', limit })`. Returns products where `is_bestseller = true`.
+
+<ParamField path="options.section" type="'vape' | '420'">
+  Optional section filter.
+</ParamField>
+<ParamField path="options.limit" type="number">
+  Maximum results. Defaults to `50`.
+</ParamField>
+
+```typescript
+const top10 = await getBestsellerProducts({ section: 'vape', limit: 10 });
+```
+
+---
+
+## getRecentProducts()
+
+```typescript
+export async function getRecentProducts(
+    limit: number = 40
+): Promise<Product[]>
+```
+
+Returns products added within the **last 14 days**, ordered by `created_at DESC`. Filters by `is_active`, `status = 'active'`, and `stock > 0`.
+
+<ParamField path="limit" type="number">
+  Maximum results. Defaults to `40`.
+</ParamField>
+
+```typescript
+const recentlyAdded = await getRecentProducts(20);
+```
+
+---
+
+## getDiscountedProducts()
+
+```typescript
+export async function getDiscountedProducts(
+    limit: number = 50
+): Promise<Product[]>
+```
+
+Returns products that have a `compare_at_price` greater than their `price`. Filters are applied server-side first, then refined locally with `p.compare_at_price && p.compare_at_price > p.price`.
+
+```typescript
+const onSale = await getDiscountedProducts(30);
+```
+
+---
+
+## getProductBySlug()
+
+```typescript
+export async function getProductBySlug(
+    slug: string,
+    section: Section
+): Promise<Product | null>
+```
+
+Fetches a single product by its URL slug and section. Used on product detail pages. Returns `null` when not found (Supabase error code `PGRST116`).
+
+<ParamField path="slug" type="string" required>
+  The product's URL slug, e.g. `"aegis-legend-2"`.
+</ParamField>
+<ParamField path="section" type="'vape' | '420'" required>
+  The store section the product belongs to.
+</ParamField>
+
+<ResponseField name="Product | null" type="Product | null">
+  Full product with variants, or `null` if not found.
+</ResponseField>
+
+```typescript
+import { getProductBySlug } from '@/services';
+
+// In a route loader
+const product = await getProductBySlug('aegis-legend-2', 'vape');
+if (!product) {
+    // navigate to 404
+}
+```
+
+---
+
+## getProductsByIds()
+
+```typescript
+export async function getProductsByIds(
+    ids: string[]
+): Promise<Product[]>
+```
+
+Batch lookup by primary key array. Used for cart validation to check current stock and active status. Returns an empty array immediately if `ids` is empty.
+
+```typescript
+const ids = cartItems.map(item => item.product.id);
+const current = await getProductsByIds(ids);
+// caller filters is_active / stock
+```
+
+---
+
+## getProductsBySearch()
+
+```typescript
+export async function getProductsBySearch(
+    query: string
+): Promise<Product[]>
+```
+
+Live-search implementation using `ILIKE` on `name` and `short_description`. Escapes `%` and `_` characters to prevent filter injection. Limited to **10 results**.
+
+<ParamField path="query" type="string" required>
+  Search term. Returns `[]` if empty or whitespace-only.
+</ParamField>
+
+```typescript
+// Live search
+const results = await getProductsBySearch('mango ice');
+```
+
+---
+
+## searchProducts() — from search.service.ts
+
+```typescript
+export async function searchProducts(
+    query: string,
+    options: SearchOptions = {}
+): Promise<Product[]>
+```
+
+Advanced multi-field search from `src/services/search.service.ts`. Searches `name`, `short_description`, `description`, `sku`, and array `tags`. Orders results by `is_featured DESC`, then `name ASC`. Default limit is **20**.
+
+<ParamField path="query" type="string" required>
+  Search term.
+</ParamField>
+<ParamField path="options.section" type="'vape' | '420'">
+  Optional section filter.
+</ParamField>
+<ParamField path="options.limit" type="number">
+  Maximum results. Defaults to `20`.
+</ParamField>
+
+```typescript
+import { searchProducts } from '@/services';
+
+const results = await searchProducts('aegis', { section: 'vape', limit: 10 });
+```
+
+---
+
+## getSmartRecommendations()
+
+```typescript
+export async function getSmartRecommendations(
+    product: Product,
+    limit: number = 4
+): Promise<Product[]>
+```
+
+Smart upsell engine. Looks up compatible category slugs from `@/lib/upsell-logic`, fetches matching category IDs, then returns in-stock bestseller products from those categories. Falls back to same-category products if no upsell rules exist.
+
+```typescript
+const recommendations = await getSmartRecommendations(currentProduct, 4);
+```
+
+---
+
+## mapProductVariations()
+
+```typescript
+export function mapProductVariations(data: Product[]): Product[];
+export function mapProductVariations(data: Product): Product;
+```
+
+Applied automatically by all service functions. Ensures `specs` defaults to `{}`, `badges` defaults to `[]`, and each variant option includes an `attribute_name` string extracted from the nested join.

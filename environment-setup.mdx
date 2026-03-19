@@ -1,0 +1,125 @@
+---
+title: "Environment Setup"
+description: "Configure the required and optional environment variables for VSM Store."
+---
+
+VSM Store uses Vite's `import.meta.env` system for environment variables. All variables exposed to the browser **must** be prefixed with `VITE_`.
+
+Copy `.env.example` to `.env` at the project root:
+
+```bash
+cp .env.example .env
+```
+
+## Environment Variables
+
+<ParamField path="VITE_SUPABASE_URL" type="string" required>
+  The base URL of your Supabase project. Found in **Supabase Dashboard → Project Settings → API → Project URL**.
+
+  ```env
+  VITE_SUPABASE_URL=https://your-project-id.supabase.co
+  ```
+</ParamField>
+
+<ParamField path="VITE_SUPABASE_ANON_KEY" type="string" required>
+  The anonymous (public) API key for your Supabase project. Found in **Supabase Dashboard → Project Settings → API → Project API Keys → `anon public`**.
+
+  ```env
+  VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+  ```
+
+  <Note>
+    This key is safe to expose in client-side code. Row Level Security (RLS) policies on every table enforce access control at the database level.
+  </Note>
+</ParamField>
+
+<ParamField path="VITE_SENTRY_DSN" type="string">
+  Data Source Name for Sentry error monitoring. When present, Sentry initializes automatically in production via `initMonitoring()` in `main.tsx`. Omit this variable entirely to disable Sentry.
+
+  ```env
+  VITE_SENTRY_DSN=https://your-key@o0.ingest.sentry.io/0
+  ```
+
+  Sentry is configured with:
+  - `tracesSampleRate: 1.0` — 100% of transactions traced
+  - `replaysOnErrorSampleRate: 1.0` — full session replay on every error
+  - `browserTracingIntegration` + `replayIntegration`
+</ParamField>
+
+## Configuration Validation
+
+`src/lib/supabase.ts` exports an `isSupabaseConfigured` boolean that checks both variables at module load time:
+
+```typescript
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+export const isSupabaseConfigured = !!supabaseUrl && !!supabaseAnonKey;
+```
+
+If either variable is missing, `App.tsx` renders an error screen instead of mounting the application:
+
+```tsx
+if (!isSupabaseConfigured) {
+    return (
+        <div className="flex min-h-screen flex-col items-center justify-center bg-theme-primary p-4 text-center text-white">
+            <div className="rounded-xl bg-red-500/10 p-8 border border-red-500/20 max-w-md">
+                <h1 className="mb-4 text-2xl font-bold text-red-400">Error de Configuración</h1>
+                <p className="mb-6 text-theme-secondary">
+                    No se ha configurado la conexión con Supabase.
+                </p>
+                <div className="text-left text-sm bg-black/30 p-4 rounded-lg font-mono text-theme-secondary">
+                    <p>Crea un archivo <span className="text-white">.env</span> en la raíz del proyecto con:</p>
+                    <ul className="list-disc pl-4 mt-2 space-y-1">
+                        <li>VITE_SUPABASE_URL</li>
+                        <li>VITE_SUPABASE_ANON_KEY</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    );
+}
+```
+
+This prevents cryptic runtime crashes — any misconfiguration is surfaced immediately on first load.
+
+## Production: Cloudflare Pages
+
+VSM Store is hosted on Cloudflare Pages at [vsm-store.pages.dev](https://vsm-store.pages.dev). Environment variables are set in the Cloudflare dashboard, not in committed files.
+
+<Steps>
+  <Step title="Open your Pages project">
+    In the [Cloudflare dashboard](https://dash.cloudflare.com), go to **Workers & Pages** and select your VSM Store project.
+  </Step>
+  <Step title="Navigate to Environment Variables">
+    Go to **Settings → Environment Variables**.
+  </Step>
+  <Step title="Add variables for Production">
+    Add each variable under the **Production** environment:
+
+    | Variable | Value |
+    |---|---|
+    | `VITE_SUPABASE_URL` | Your Supabase project URL |
+    | `VITE_SUPABASE_ANON_KEY` | Your Supabase anon key |
+    | `VITE_SENTRY_DSN` | Your Sentry DSN (optional) |
+  </Step>
+  <Step title="Redeploy">
+    Trigger a new deploy after saving. Cloudflare injects the variables at build time so Vite can embed them in the bundle.
+  </Step>
+</Steps>
+
+<Warning>
+  Never commit your `.env` file. It is listed in `.gitignore`. Only `.env.example` (with placeholder values) should be tracked in version control.
+</Warning>
+
+## Supabase Edge Function Secrets
+
+The AI Edge Functions require additional secrets set directly on the Supabase project (not in `.env`):
+
+```bash
+# Set via Supabase CLI
+npx supabase secrets set GEMINI_API_KEY=your-key
+npx supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+See the Supabase documentation for managing function secrets.

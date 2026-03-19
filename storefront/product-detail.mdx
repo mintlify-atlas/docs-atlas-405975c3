@@ -1,0 +1,177 @@
+---
+title: "Product Detail"
+description: "Product detail page at /vape/:slug and /420/:slug — images, stock validation, add-to-cart flow, and dynamic SEO meta tags."
+---
+
+The product detail page is rendered at `/vape/:slug` or `/420/:slug` after `SectionSlugResolver` identifies the slug as a product (not a category). It is implemented in `src/pages/ProductDetail.tsx` and loaded via `useProductBySlug()`.
+
+## Fetching a Product
+
+```typescript
+import { useProductBySlug } from '@/hooks/useProducts';
+
+const { data: product, isLoading, error } = useProductBySlug(
+    slug,     // from useParams()
+    section   // 'vape' | '420'
+);
+// Query key: ['products', 'detail', section, slug]
+// staleTime: 1 minute (fresher data for checkout validation)
+```
+
+Underneath, `getProductBySlug(slug, section)` queries the `products` table with a full join on `product_variants` → `product_variant_options` → `product_attribute_values` → `product_attributes`.
+
+## The `Product` Interface
+
+The complete TypeScript interface from `src/types/product.ts`:
+
+```typescript
+export interface Product {
+    id: string;
+    name: string;
+    slug: string;
+    description: string | null;
+    short_description: string | null;
+    price: number;
+    compare_at_price: number | null;     // Strikethrough / was-price
+    stock: number;
+    sku: string | null;
+    section: 'vape' | '420';
+    category_id: string;
+    tags: string[];
+    status: 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+    images: string[];                    // Ordered gallery URLs
+    cover_image: string | null;          // Primary image for cards/OG
+    is_featured: boolean;
+    is_featured_until: string | null;
+    is_new: boolean;
+    is_new_until: string | null;
+    is_bestseller: boolean;
+    is_bestseller_until: string | null;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+    // Extended ontology
+    specs: Record<string, string>;       // e.g. { "Resistencia": "0.6Ω" }
+    badges: string[];                    // e.g. ["Nuevo", "Top Seller"]
+    // AI strategy
+    ai_is_featured: boolean;
+    ai_sales_note: string | null;
+    ai_exclude: boolean;
+    variants?: ProductVariant[];
+}
+```
+
+## Image Gallery
+
+The `ProductImages` component (`src/components/products/ProductImages.tsx`) renders a gallery from `product.images[]`.
+
+<CardGroup cols={2}>
+  <Card title="cover_image" icon="image">
+    The primary image displayed on product cards, search results, and Open Graph meta tags. Falls back to `images[0]` if `null`.
+  </Card>
+  <Card title="images[]" icon="images">
+    Ordered array of gallery image URLs stored in Supabase Storage. The detail page renders them as a scrollable or paginated gallery.
+  </Card>
+</CardGroup>
+
+## Status Display
+
+The `status` field controls visual indicators on the detail page:
+
+```typescript
+type ProductStatus = 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+```
+
+| Status | Badge | Add to Cart |
+|--------|-------|-------------|
+| `active` | None (default) | Enabled |
+| `legacy` | "Legacy" warning | Enabled (store allows it) |
+| `discontinued` | "Discontinuado" | **Blocked** in `cart.store.ts` |
+| `coming_soon` | "Próximamente" | Disabled |
+
+## Compare-at Price
+
+When `compare_at_price` is set and greater than `price`, the page displays a strikethrough original price alongside the discounted current price:
+
+```typescript
+// Display logic
+const hasDiscount = product.compare_at_price && product.compare_at_price > product.price;
+const discountPercent = hasDiscount
+    ? Math.round((1 - product.price / product.compare_at_price!) * 100)
+    : 0;
+```
+
+## Add-to-Cart Flow
+
+<Steps>
+  <Step title="Stock validation">
+    Before rendering the "Add to Cart" button, the page checks `product.stock > 0`. If `stock === 0`, a "Sin stock" state is shown.
+  </Step>
+  <Step title="Status guard">
+    `cart.store.ts → addItem()` rejects items with `!product.is_active` or `product.status === 'discontinued'` and returns early without mutation.
+  </Step>
+  <Step title="Quantity clamping">
+    `updateQuantity(productId, qty)` clamps the quantity to `Math.min(quantity, item.product.stock)` to prevent over-ordering.
+  </Step>
+  <Step title="Cart sidebar opens">
+    On successful `addItem()`, `openCart()` is called from `useCartStore` to display `<CartSidebar />`.
+  </Step>
+  <Step title="GA4 event fires">
+    `trackAddToCart(product, quantity)` from `src/lib/analytics.ts` fires the `add_to_cart` GA4 e-commerce event asynchronously.
+  </Step>
+</Steps>
+
+The `CartItem` interface used in the cart:
+
+```typescript
+export interface CartItem {
+    product: Product;
+    quantity: number;
+    variant_id?: string | null;    // null = base product, string = specific variant
+    variant_name?: string | null;  // Display label, e.g. "3mg Mango"
+}
+```
+
+## Urgency Indicators
+
+The `UrgencyIndicators` component (`src/components/products/UrgencyIndicators.tsx`) renders urgency signals based on product data:
+
+<Accordion title="Low stock warning">
+  When `product.stock` is between 1 and a threshold (typically 5), a "¡Solo X disponibles!" badge is shown to create purchase urgency.
+</Accordion>
+
+<Accordion title="Promotional badges">
+  Badges from `product.badges[]` are rendered as colored labels. Examples: `"Nuevo"`, `"Top Seller"`, `"Oferta"`. These are populated by the admin panel or the `product-intelligence` AI edge function via `ai_sales_note`.
+</Accordion>
+
+<Accordion title="Featured / Bestseller / New flags">
+  `is_featured`, `is_new`, and `is_bestseller` each render dedicated ribbon or badge overlays. Expiry timestamps (`is_featured_until`, etc.) are displayed to admins but not to customers.
+</Accordion>
+
+## SEO: Dynamic Meta Tags
+
+The product detail page uses `react-helmet-async` (via the `<SEO />` component at `src/components/seo/SEO.tsx`) to inject per-product meta tags:
+
+```tsx
+// Example meta output for a product
+<title>{product.name} | VSM Store</title>
+<meta name="description" content={product.short_description ?? product.description} />
+
+{/* Open Graph */}
+<meta property="og:title" content={product.name} />
+<meta property="og:description" content={product.short_description} />
+<meta property="og:image" content={product.cover_image ?? product.images[0]} />
+<meta property="og:type" content="product" />
+
+{/* Twitter Card */}
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content={product.cover_image} />
+```
+
+<Info>
+  `cover_image` is used for social sharing previews. If `null`, the component falls back to `images[0]`. Ensure products have a `cover_image` set for optimal OG rendering.
+</Info>
+
+## Smart Recommendations
+
+Below the main product content, `getSmartRecommendations(product, limit)` from `products.service.ts` fetches related products based on category compatibility rules defined in `src/lib/upsell-logic.ts`. If no compatibility rules exist for the product's category, it falls back to same-category products.

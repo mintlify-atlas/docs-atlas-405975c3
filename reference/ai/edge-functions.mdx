@@ -1,0 +1,439 @@
+---
+title: "Edge Functions Reference"
+description: "Detailed reference for each of the nine AI edge functions: request format, response schema, and the Gemini models they use."
+---
+
+All functions are deployed to `supabase/functions/` and run on the Deno runtime. The base endpoint for calls is:
+
+```
+https://<PROJECT_REF>.supabase.co/functions/v1/<function-name>
+```
+
+---
+
+## inventory-oracle
+
+**File:** `supabase/functions/inventory-oracle/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Analyses 30 days of order history for a product and predicts when stock will run out. Returns urgency level and messages for both customer-facing display and admin restock planning.
+
+### Request body
+
+```typescript
+{
+    productId: string;     // Product UUID to analyse
+    currentStock: number;  // Current stock level
+}
+```
+
+### Response
+
+```typescript
+{
+    daysUntilOut: number;           // Estimated days until stock = 0
+    depletionDate: string;          // ISO date string
+    customerMessage: string;        // Short persuasive message for storefront urgency
+    adminRecommendation: string;    // Technical restock recommendation
+    urgencyLevel: 'low' | 'medium' | 'high' | 'critical';
+}
+```
+
+### Error response
+
+```typescript
+{
+    error: string;
+    context: 'inventory-oracle';
+    gemini_key_present: boolean;
+    full_error: string;
+}
+```
+
+```typescript
+// Usage from admin
+const { data } = await supabase.functions.invoke('inventory-oracle', {
+    body: { productId: 'uuid', currentStock: 3 }
+});
+console.log(data.urgencyLevel); // 'critical'
+```
+
+---
+
+## dashboard-intelligence
+
+**File:** `supabase/functions/dashboard-intelligence/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Generates a C-Level executive narrative and health score from dashboard KPIs. Used by `getDashboardPulse()` in `admin-dashboard.service.ts`.
+
+### Request body
+
+```typescript
+{
+    action: 'get_pulse';  // Must be exactly 'get_pulse'
+    stats: {
+        todaySales: number;
+        pendingOrders: number;
+        lowStockProducts: number;
+        totalCustomers: number;
+        totalProducts: number;
+        totalOrders: number;
+        topProducts: { name: string; revenue: number }[];
+    };
+}
+```
+
+### Response
+
+```typescript
+{
+    narrative: string;      // Max 40 words, cyberpunk corporate tone
+    anomalies: string[];    // 2 key alerts
+    health_score: number;   // 0–100
+}
+```
+
+---
+
+## customer-intelligence
+
+**File:** `supabase/functions/customer-intelligence/index.ts`  
+**Models:** `gemini-2.5-flash` (Analyst + Sommelier engines)
+
+The most complex edge function. Handles multiple actions dispatched via an `action` field in the request body.
+
+### Actions
+
+#### `concierge_chat` / `semantic_search`
+
+The main AI concierge pipeline. Runs a two-engine Analyst→Sommelier architecture:
+1. **Analyst** classifies intent and dispatches tool calls
+2. **Sommelier** generates the empathetic response
+
+Returns capability capsule routing payloads for client-side handling of product search, policy lookup, and cart operations.
+
+```typescript
+// Request
+{
+    action: 'concierge_chat',
+    query: string;                // User's message
+    customerId?: string;
+    history?: { role: string; content: string }[];   // Last N messages
+    customerContext?: { id: string; [key: string]: unknown };
+}
+
+// Response (example product search routing)
+{
+    requires_client_capsule: true,
+    capsule_name: 'product_search_integrity',
+    tool_args: { query: string; is_ambiguous: boolean; requires_semantic_expansion: boolean },
+    debug: { intent: string; raw_analyst: string; runtime_truth: object }
+}
+```
+
+#### `parse_admin_intent`
+
+Converts an admin natural language command into a structured action.
+
+```typescript
+// Request
+{ action: 'parse_admin_intent', query: string }
+
+// Response
+{
+    action: 'search' | 'navigate' | 'filter' | 'unknown';
+    target: string;
+    params: Record<string, unknown>;
+    message: string;
+}
+```
+
+#### `generate_supplier_copy`
+
+Generates a professional WhatsApp restock message for a supplier.
+
+```typescript
+// Request
+{ action: 'generate_supplier_copy', productName: string, currentStock: number, sku: string }
+
+// Response
+{ message: string }
+```
+
+#### `generate_whatsapp_copy`
+
+Generates a personalised WhatsApp marketing message for a customer segment.
+
+```typescript
+// Request
+{ action: 'generate_whatsapp_copy', customerId: string, context?: string }
+
+// Response
+{ message: string }
+```
+
+#### `generate_proactive_insights`
+
+Analyses low-stock products and at-risk customers to produce 3 strategic insights.
+
+```typescript
+// Request
+{ action: 'generate_proactive_insights' }
+
+// Response
+{
+    insights: [
+        { type: 'warning' | 'info' | 'success', title: string, description: string }
+    ]
+}
+```
+
+---
+
+## voice-intelligence
+
+**File:** `supabase/functions/voice-intelligence/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Converts a natural language query (text or base64 audio) into a clean search keyword string.
+
+### Request body
+
+```typescript
+{
+    transcript?: string;   // Text input
+    audio?: string;        // Base64-encoded audio data
+    mimeType?: string;     // e.g. 'audio/webm' (default)
+}
+```
+
+### Response
+
+```typescript
+{
+    original: string;       // Original transcript or 'Audio Input'
+    searchQuery: string;    // Extracted keywords, e.g. 'mango ice pod'
+    isComplex: boolean;     // True if the query needs advanced filtering
+}
+```
+
+On error, the function returns HTTP 200 with `searchQuery` set to the original transcript, so the frontend can fall back to a plain text search without breaking.
+
+---
+
+## product-intelligence
+
+**File:** `supabase/functions/product-intelligence/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Generates SEO-friendly product descriptions and marketing copy.
+
+### Request body
+
+```typescript
+{
+    action: 'generate_copy';   // Currently the only supported action
+    name: string;              // Product name (required)
+    description?: string;      // Existing description to improve (optional)
+}
+```
+
+### Response
+
+```typescript
+{
+    description: string;         // Full description, minimum 3 paragraphs
+    short_description: string;   // Max 20 words
+    tags: string[];              // 5 suggested tags
+}
+```
+
+```typescript
+const { data } = await supabase.functions.invoke('product-intelligence', {
+    body: { name: 'Aegis Legend 2', action: 'generate_copy' }
+});
+```
+
+---
+
+## loyalty-intelligence
+
+**File:** `supabase/functions/loyalty-intelligence/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Evaluates a customer's RFM segment from the `customer_intelligence_360` view and generates a personalised discount offer. Creates a real coupon in the `coupons` table and records it in `smart_loyalty_propositions`.
+
+### Request body
+
+```typescript
+{
+    customerId: string;   // UUID of the customer
+}
+```
+
+### Response
+
+Returns the full `smart_loyalty_propositions` row:
+
+```typescript
+{
+    id: string;
+    customer_id: string;
+    coupon_id: string;
+    generated_code: string;         // e.g. 'IA-RECOVER-abc123'
+    personalized_message: string;   // Max 30 words, campaign tone
+    discount_value: number;         // 10–25 depending on segment
+    discount_type: 'percentage' | 'fixed';
+    segment_at_generation: string;
+    // ... other DB fields
+}
+```
+
+**Discount guide by segment:**
+- `Campeón` → 10%
+- `Leal` → 15%
+- `En Riesgo` / `Casi Perdido` → 20–25%
+- `Nuevo` → 15%
+
+Coupons expire in **48 hours** and have a minimum purchase of $200 MXN.
+
+---
+
+## customer-narrative
+
+**File:** `supabase/functions/customer-narrative/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Generates a 2-sentence executive CRM narrative for a customer, combining `customer_intelligence_360` data with the last 5 order amounts and statuses.
+
+### Request body
+
+```typescript
+{
+    customerId: string;
+}
+```
+
+### Response
+
+```typescript
+{
+    narrative: string;   // Max 40 words, professional tone
+}
+```
+
+```typescript
+const { data } = await supabase.functions.invoke('customer-narrative', {
+    body: { customerId: 'user-uuid' }
+});
+console.log(data.narrative);
+// "Este cliente es un motor de ingresos Leal; su ticket promedio
+//  es alto pero no ha comprado en 30 días..."
+```
+
+---
+
+## bundle-intelligence
+
+**File:** `supabase/functions/bundle-intelligence/index.ts`  
+**Model:** `gemini-2.5-flash-lite` (v1beta API)
+
+Suggests a complementary product from a compatible category, generates a creative bundle name, and creates a 15% discount coupon valid for 2 hours.
+
+### Request body
+
+```typescript
+{
+    product: {
+        id: string;
+        name: string;
+        price: number;
+        category_id: string;
+    };
+    cartTotal?: number;
+}
+```
+
+### Compatibility rules
+
+```typescript
+// Built-in category slug compatibility map
+{
+    'mods': ['liquidos', 'coils'],
+    'atomizadores': ['liquidos', 'coils'],
+    'liquidos': ['coils', 'mods'],
+    'vaporizers': ['accesorios-420'],
+    'fumables': ['accesorios-420'],
+}
+```
+
+### Response
+
+```typescript
+{
+    bundleName: string;           // Creative name, max 4 words
+    suggestedProduct: {
+        id: string;
+        name: string;
+        price: number;
+        cover_image: string | null;
+        category_id: string;
+    };
+    couponCode: string;           // e.g. 'BUNDLE-abc123'
+    discountPercentage: 15;       // Always 15%
+}
+```
+
+---
+
+## embeddings-processor
+
+**File:** `supabase/functions/embeddings-processor/index.ts`  
+**Model:** `gemini-embedding-001` (**v1beta** API — intentionally not migrated)
+
+Converts a text string into a vector embedding array for semantic search.
+
+### Request body
+
+```typescript
+{
+    text: string;   // Text to embed
+}
+```
+
+### Response
+
+```typescript
+{
+    embedding: number[];   // Dense vector from gemini-embedding-001
+}
+```
+
+**Note:** This function deliberately uses the `v1beta` endpoint (`https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent`) because `gemini-embedding-001` is only available on the beta API.
+
+```typescript
+const { data } = await supabase.functions.invoke('embeddings-processor', {
+    body: { text: 'vape de sabor mango hielo' }
+});
+const vector = data.embedding; // number[]
+```
+
+---
+
+## Deployment
+
+```bash
+# Deploy a single function
+npx supabase functions deploy inventory-oracle --project-ref <PROJECT_REF>
+
+# Deploy all functions at once
+npx supabase functions deploy --project-ref <PROJECT_REF>
+```
+
+Set secrets before deploying:
+
+```bash
+npx supabase secrets set GEMINI_API_KEY=your-key-here --project-ref <PROJECT_REF>
+npx supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your-key --project-ref <PROJECT_REF>
+```

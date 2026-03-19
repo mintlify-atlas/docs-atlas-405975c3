@@ -1,0 +1,257 @@
+---
+title: "Loyalty Program"
+description: "V-Coins loyalty system with 4 tiers, earn/burn points, Supabase RPC balance, AI-powered smart rewards, and configurable store settings."
+---
+
+VSM Store's loyalty program (internally called **V-Coins**) awards points on every purchase, tracks a tier progression from Bronze to Platinum, and supports point redemption for discounts at checkout. The program is fully configurable from the admin panel via `store_settings`.
+
+## Routes
+
+| Route | Component | Auth |
+|-------|-----------|------|
+| `/loyalty` | `Loyalty` | Yes |
+| `/stats` | `Stats` | Yes |
+
+## Tier System
+
+Four tiers are defined in `src/lib/domain/loyalty.ts` as `LOYALTY_TIERS`:
+
+| Tier | ID | Minimum Spent | Discount Multiplier | Free Shipping |
+|------|----|--------------|---------------------|---------------|
+| Bronze | `bronze` | $0 MXN | Base rate | No |
+| Silver | `silver` | Configurable | 1.x multiplier | Above minimum |
+| Gold | `gold` | Configurable | Higher multiplier | Yes |
+| Platinum | `platinum` | Configurable | Maximum multiplier | Yes |
+
+```typescript
+// Re-exported from loyalty.service.ts
+type Tier = 'bronze' | 'silver' | 'gold' | 'platinum';
+
+// customer_profiles.customer_tier stores the current tier
+customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+```
+
+<Info>
+  Tier thresholds and multipliers can be overridden from the admin panel via dynamic tier configuration stored in `store_settings.loyalty_config`. The `getTierInfo(tier, dynamicTiers?)` function in `loyalty.service.ts` merges dynamic config with defaults.
+</Info>
+
+## Points Earning
+
+The conversion rate is defined in `src/lib/domain/loyalty.ts`:
+
+> **$100 MXN spent = 10 loyalty points**
+
+```typescript
+import { calculateLoyaltyPoints } from '@/lib/domain/loyalty';
+
+calculateLoyaltyPoints(500);  // → 50 points
+calculateLoyaltyPoints(1200); // → 120 points
+```
+
+Points are awarded inside `createOrder()` in `orders.service.ts` automatically after the order row is inserted:
+
+```typescript
+const points = data.earned_points ?? calculateLoyaltyPoints(data.total);
+if (points > 0) {
+    await addLoyaltyPoints(
+        data.customer_id,
+        points,
+        order.id,
+        `Compra #${order.order_number}`
+    );
+}
+```
+
+The `earned_points` override in `CreateOrderData` lets the checkout flow pass a pre-calculated value (e.g., after applying bonus multipliers).
+
+## Adding Points — `addLoyaltyPoints()`
+
+```typescript
+// loyalty.service.ts
+export async function addLoyaltyPoints(
+    customerId: string,
+    points: number,
+    orderId: string,
+    description: string
+): Promise<void>
+```
+
+Internally calls the `process_loyalty_points` Supabase RPC with `p_type: 'earned'`. This RPC handles the atomic insert to `loyalty_points` and updates the customer's cached balance.
+
+## Points Balance — `getPointsBalance()`
+
+```typescript
+// loyalty.service.ts
+export async function getPointsBalance(customerId: string): Promise<number>
+```
+
+Calls the `get_customer_points_balance` Supabase RPC function, which computes the net balance from all `earned` and `spent` transactions:
+
+```typescript
+const { data } = await supabase
+    .rpc('get_customer_points_balance', { p_customer_id: customerId });
+return data ?? 0;
+```
+
+```typescript
+import { usePointsBalance } from '@/hooks/useOrders';
+
+const { data: balance } = usePointsBalance(customerId);
+// Query key: ['points', customerId]
+// staleTime: 5 minutes
+```
+
+## Points Redemption — `redeemPoints()`
+
+```typescript
+// loyalty.service.ts
+export async function redeemPoints(
+    customerId: string,
+    points: number,
+    orderId?: string
+): Promise<{ discount: number }>
+```
+
+Redemption rules (sourced from `store_settings.loyalty_config`, with these defaults):
+
+```typescript
+{
+    points_per_currency: 0.1,       // Points earned per MXN
+    currency_per_point: 0.1,        // MXN discount per point redeemed
+    min_points_to_redeem: 100,      // Minimum points required
+    max_points_per_order: 1000,     // Cap per order redemption
+    points_expiry_days: 365,        // Points expire after 1 year
+    enable_loyalty: true
+}
+```
+
+The function validates the minimum threshold, caps at `max_points_per_order`, then calls `process_loyalty_points` RPC with `p_type: 'spent'` and a negative point amount.
+
+<Warning>
+  If `store_settings.loyalty_config.enable_loyalty` is `false`, `redeemPoints()` throws `'El programa de lealtad está desactivado'`. Always check this before displaying the redemption UI.
+</Warning>
+
+## `loyalty_points` Table
+
+Every point transaction is recorded as an immutable row:
+
+```sql
+loyalty_points (
+    id              uuid PRIMARY KEY,
+    customer_id     uuid REFERENCES customer_profiles(id),
+    points          integer,          -- positive = earned, negative = spent
+    transaction_type 'earned' | 'spent' | 'expired' | 'adjustment',
+    order_id        uuid REFERENCES orders(id) NULL,
+    description     text,             -- e.g. "Compra #VSM-00042"
+    created_at      timestamptz
+)
+```
+
+The `PointsTransaction` TypeScript interface:
+
+```typescript
+export interface PointsTransaction {
+    id: string;
+    points: number;
+    transaction_type: 'earned' | 'spent' | 'expired' | 'adjustment';
+    description: string;
+    order_id: string | null;
+    created_at: string;
+}
+```
+
+## Hooks
+
+```typescript
+import { useLoyalty } from '@/hooks/useLoyalty';
+// Query key: ['loyalty']
+// Returns loyalty history and tier info
+
+import { usePointsBalance } from '@/hooks/useOrders';
+// Query key: ['points', customerId]
+// Returns current point balance as a number
+```
+
+`getPointsHistory(customerId)` returns the last 50 transactions ordered by `created_at DESC`:
+
+```typescript
+export async function getPointsHistory(
+    customerId: string
+): Promise<PointsTransaction[]>
+```
+
+## Tier Progress
+
+```typescript
+import { getProgressToNextTier } from '@/services/loyalty.service';
+
+const progress = getProgressToNextTier(customer.total_spent);
+// Returns:
+// {
+//     currentTier: 'silver',
+//     nextTier: 'gold',
+//     progress: 62,        // percentage toward next tier
+//     remaining: 1900      // MXN remaining
+// }
+```
+
+The `LoyaltyDashboard` component (`src/components/loyalty/LoyaltyDashboard.tsx`) renders this as a progress bar with the current and next tier badges.
+
+## AI-Powered Smart Rewards
+
+The `loyalty-intelligence` Supabase Edge Function analyzes customer behavior and generates personalized discount propositions stored in `smart_loyalty_propositions`:
+
+```typescript
+// Request a new AI reward
+export async function generateSmartReward(
+    customerId: string
+): Promise<SmartLoyaltyProposition | null>
+
+// Fetch active (unclaimed, non-expired) proposition
+export async function getActiveIAProposition(
+    customerId: string
+): Promise<SmartLoyaltyProposition | null>
+
+// Mark proposition as claimed
+export async function claimIAProposition(
+    propositionId: string
+): Promise<void>
+```
+
+```typescript
+export interface SmartLoyaltyProposition {
+    id: string;
+    customer_id: string;
+    coupon_code: string;            // Applies to coupons table
+    generated_code: string;         // Unique code for this proposition
+    personalized_message: string;   // Gemini-generated copy
+    discount_value: number;
+    discount_type: 'percentage' | 'fixed';
+    expires_at: string;             // ISO timestamp
+    is_claimed: boolean;
+}
+```
+
+<Tip>
+  Smart rewards are generated on-demand by calling `generateSmartReward()` — typically triggered when the customer opens the Loyalty Dashboard. Show the proposition card only if `getActiveIAProposition()` returns a non-null value and `expires_at` is in the future.
+</Tip>
+
+## Admin Loyalty Stats
+
+The admin panel accesses aggregate loyalty data via `getAdminLoyaltyStats()`, which calls the `get_admin_loyalty_stats` Supabase RPC:
+
+```typescript
+interface LoyaltyStatsData {
+    puntos_hoy: number;
+    ultimo_canje: {
+        created_at?: string;
+        full_name?: string;
+        points?: number;
+    } | null;
+    top_usuarios: Array<{
+        id: string;
+        full_name: string;
+        balance: number;
+    }>;
+}
+```

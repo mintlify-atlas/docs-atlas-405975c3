@@ -1,0 +1,225 @@
+---
+title: "Auth Service"
+description: "Authentication and customer profile functions wrapping Supabase Auth and the customer_profiles table."
+---
+
+All functions are in `src/services/auth.service.ts`. The service uses the Supabase Auth client for session management and the `customer_profiles` table for extended profile data.
+
+## Key behaviors
+
+- **`signUp` auto-creates a profile** — immediately after Supabase Auth creates the user, `createCustomerProfile` is called with an `upsert` to populate `customer_profiles`. Profile creation errors are swallowed so they never block signup.
+- **All date fields** are ISO 8601 strings.
+- **`resetPassword` and `signUp`** both use `window.location.origin` as the redirect base, so they require a browser context.
+
+---
+
+## signUp()
+
+```typescript
+export async function signUp(
+    email: string,
+    password: string,
+    fullName?: string,
+    phone?: string,
+    ai_preferences?: AIPreferences,
+    ia_context?: IAContext
+): Promise<{ user: User | null; session: Session | null }>
+```
+
+Registers a new user with Supabase Auth and creates their `customer_profiles` row in one call.
+
+<ParamField path="email" type="string" required>User's email address.</ParamField>
+<ParamField path="password" type="string" required>Password (min 6 characters enforced by Supabase).</ParamField>
+<ParamField path="fullName" type="string">Optional display name stored in `customer_profiles.full_name`.</ParamField>
+<ParamField path="phone" type="string">Phone number stored in both `phone` and `whatsapp` columns initially.</ParamField>
+<ParamField path="ai_preferences" type="AIPreferences">Optional AI personalisation preferences.</ParamField>
+<ParamField path="ia_context" type="IAContext">Optional IA context object for the AI concierge.</ParamField>
+
+<ResponseField name="data" type="object">
+  Supabase Auth response containing `user` and `session`.
+</ResponseField>
+
+```typescript
+import { signUp } from '@/services';
+
+const data = await signUp(
+    'user@example.com',
+    'securepassword',
+    'John Doe',
+    '+522281234567'
+);
+// data.user.id is the UUID used everywhere else
+```
+
+---
+
+## signIn()
+
+```typescript
+export async function signIn(
+    email: string,
+    password: string
+): Promise<{ user: User; session: Session }>
+```
+
+Authenticates via `signInWithPassword`. Throws the Supabase error on failure.
+
+```typescript
+const { user, session } = await signIn('user@example.com', 'password');
+```
+
+---
+
+## signOut()
+
+```typescript
+export async function signOut(): Promise<void>
+```
+
+Clears the Supabase session. Throws on error.
+
+```typescript
+await signOut();
+```
+
+---
+
+## resetPassword()
+
+```typescript
+export async function resetPassword(
+    email: string
+): Promise<void>
+```
+
+Sends a password-reset email via `resetPasswordForEmail`. Redirects to `{origin}/login` after the user clicks the link.
+
+<ParamField path="email" type="string" required>Email address to send the reset link to.</ParamField>
+
+```typescript
+await resetPassword('user@example.com');
+```
+
+---
+
+## getCurrentUser()
+
+```typescript
+export async function getCurrentUser(): Promise<User | null>
+```
+
+Calls `supabase.auth.getUser()`. Returns `null` if no authenticated session exists.
+
+```typescript
+const user = await getCurrentUser();
+if (user) {
+    console.log(user.id);
+}
+```
+
+---
+
+## getCustomerProfile()
+
+```typescript
+export async function getCustomerProfile(
+    userId: string
+): Promise<CustomerProfile | null>
+```
+
+Fetches the full `customer_profiles` row for a user. Uses `maybeSingle()` so it returns `null` instead of an error when the profile doesn't exist yet.
+
+<ParamField path="userId" type="string" required>The `auth.users.id` UUID.</ParamField>
+
+<ResponseField name="CustomerProfile | null" type="CustomerProfile | null">
+  The extended profile, or `null` if not found.
+</ResponseField>
+
+```typescript
+const profile = await getCustomerProfile(user.id);
+if (profile) {
+    console.log(profile.customer_tier); // 'bronze' | 'silver' | 'gold' | 'platinum'
+}
+```
+
+---
+
+## createCustomerProfile()
+
+```typescript
+export async function createCustomerProfile(
+    userId: string,
+    data: {
+        full_name?: string | null;
+        phone: string | null;
+        whatsapp: string | null;
+        ai_preferences?: AIPreferences;
+        ia_context?: IAContext;
+    }
+): Promise<void>
+```
+
+Upserts a row into `customer_profiles`. Called automatically by `signUp` but can also be called manually when a user profile needs to be force-created. Errors are **not thrown** — they are logged to `console.error`.
+
+```typescript
+await createCustomerProfile('user-uuid', {
+    full_name: 'Jane Doe',
+    phone: '+522281234567',
+    whatsapp: '+522281234567',
+});
+```
+
+---
+
+## updateProfile()
+
+```typescript
+export async function updateProfile(
+    userId: string,
+    data: {
+        full_name?: string;
+        phone?: string;
+        whatsapp?: string;
+        birthdate?: string;
+        avatar_url?: string;
+        ia_context?: IAContext;
+    }
+): Promise<void>
+```
+
+Upserts partial data into `customer_profiles`. Throws on Supabase error.
+
+<ParamField path="userId" type="string" required>The `auth.users.id` UUID.</ParamField>
+<ParamField path="data" type="object" required>
+  Partial profile fields to update.
+  <Expandable title="properties">
+    <ParamField path="full_name" type="string">Display name.</ParamField>
+    <ParamField path="phone" type="string">Phone number.</ParamField>
+    <ParamField path="whatsapp" type="string">WhatsApp number (may differ from phone).</ParamField>
+    <ParamField path="birthdate" type="string">ISO 8601 date string, e.g. `"1995-06-15"`.</ParamField>
+    <ParamField path="avatar_url" type="string">Public URL of the avatar image.</ParamField>
+    <ParamField path="ia_context" type="IAContext">Updated IA context for the AI concierge.</ParamField>
+  </Expandable>
+</ParamField>
+
+```typescript
+await updateProfile(user.id, {
+    full_name: 'Jane Smith',
+    birthdate: '1995-06-15',
+});
+```
+
+---
+
+## Usage with AuthContext
+
+In practice, components use the `useAuth()` hook which reads from `AuthContext` rather than calling these service functions directly. The context provides `user`, `profile`, `loading`, and `signIn`, `signUp`, `signOut` wrappers.
+
+```typescript
+import { useAuth } from '@/hooks/useAuth';
+
+function MyComponent() {
+    const { user, profile, signIn, signOut } = useAuth();
+    // ...
+}
+```

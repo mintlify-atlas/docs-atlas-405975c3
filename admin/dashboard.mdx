@@ -1,0 +1,174 @@
+---
+title: "Dashboard"
+description: "Metrics, AI insights, date-range analytics, and real-time system pulse on the admin dashboard at /admin."
+---
+
+The dashboard at `/admin` is the entry point for store operators. It provides sales metrics, order activity, top-product analytics, an AI pulse narrative, and a proactive inventory oracle — all organized into animated, lazily-loaded lego components.
+
+## Dashboard Components
+
+<CardGroup cols={2}>
+  <Card title="DashboardHeader" icon="calendar">
+    Date range picker with presets (Today, Last 7 days, Last 30 days, This month). Includes a CSV export button for the current range.
+  </Card>
+  <Card title="DashboardPulse" icon="activity">
+    AI-powered business health narrative. Calls the `dashboard-intelligence` edge function to generate a `narrative`, list of `anomalies`, and a `health_score`.
+  </Card>
+  <Card title="AdminOracleDashboard" icon="alert-triangle">
+    Shows products with stock below 10 units. Fetches via `getOracleLowStockProducts()`. Links directly to the relevant product edit page.
+  </Card>
+  <Card title="AIInsights" icon="sparkles">
+    Proactive AI insights panel (Wave 59 feature). Calls `getProactiveInsights()` from `admin-crm.service.ts`.
+  </Card>
+  <Card title="DashboardStats" icon="bar-chart">
+    Six KPI cards: Today's Sales, Pending Orders, Low Stock Products, Total Customers, Active Products, Total Orders.
+  </Card>
+  <Card title="SalesChart + TopProducts" icon="trending-up">
+    Sales volume chart for the selected date range and a ranked list of top 5 products by revenue within that range.
+  </Card>
+  <Card title="RecentOrders" icon="clipboard-list">
+    Feed of the 8 most recent orders with customer name, status badge, total, and payment method.
+  </Card>
+</CardGroup>
+
+## getDashboardStats()
+
+The primary data function. Called by `useAdminDashboardStats(startDate, endDate)` in the dashboard page.
+
+```typescript
+export async function getDashboardStats(
+    startDate?: string,
+    endDate?: string
+): Promise<DashboardStats>
+```
+
+**Defaults:** If no dates are provided, `endDate` is today and `startDate` is 6 days prior (7-day window).
+
+**Return type:**
+```typescript
+export interface DashboardStats {
+    todaySales: number;       // Revenue today (excludes cancelled orders)
+    pendingOrders: number;    // Orders in: pendiente, confirmado, preparando, en_camino
+    lowStockProducts: number; // Active products with stock < 5
+    totalCustomers: number;   // All customer_profiles rows
+    totalProducts: number;    // Active products (is_active = true)
+    totalOrders: number;      // All orders (all time)
+    salesLast7Days: DailySales[];  // Per-day breakdown for the selected range
+    topProducts: TopProduct[];     // Top 5 products by revenue in range
+}
+
+export interface DailySales {
+    date: string;   // ISO date string e.g. "2026-03-15"
+    total: number;  // Revenue that day
+    count: number;  // Order count that day
+}
+
+export interface TopProduct {
+    name: string;
+    sold: number;    // Total units sold
+    revenue: number; // Total revenue
+}
+```
+
+## Date Range Filtering
+
+The dashboard maintains a `dateRange` state with `start` and `end` as ISO date strings (`YYYY-MM-DD`). Changing the range triggers a React Query refetch:
+
+```typescript
+// AdminDashboard.tsx
+const [dateRange, setDateRange] = useState(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 7);
+    return {
+        start: start.toISOString().slice(0, 10),
+        end: end.toISOString().slice(0, 10),
+    };
+});
+
+const { data: stats } = useAdminDashboardStats(dateRange.start, dateRange.end);
+```
+
+`getDashboardStats` sets the end date to `23:59:59.999` and start to `00:00:00.000` to capture the full day on both ends.
+
+## getRecentOrders()
+
+```typescript
+export async function getRecentOrders(limit = 10): Promise<AdminOrder[]>
+```
+
+Fetches recent orders with joined customer name and phone from either `customer_profiles` (for logged-in customers) or the shipping address record (for guest/anonymous orders). The dashboard calls it with `limit = 8`.
+
+## System Pulse (getPulseMetrics)
+
+The sidebar pulse indicator and `DashboardPulse` component both use:
+
+```typescript
+export async function getPulseMetrics(): Promise<PulseMetrics> 
+
+export interface PulseMetrics {
+    todaySales: number;
+    activeOrders: number;    // Orders not yet delivered or cancelled
+    inventoryAlerts: number; // Products with stock < 5
+    status: 'optimal' | 'busy' | 'alert';
+}
+```
+
+Status logic:
+- `alert` → any `inventoryAlerts > 0`
+- `busy` → `activeOrders > 10`
+- `optimal` → everything else
+
+## AI Dashboard Intelligence
+
+The `DashboardPulse` component calls the `dashboard-intelligence` Supabase Edge Function:
+
+```typescript
+export async function getDashboardPulse(
+    stats: DashboardStats
+): Promise<{ narrative: string; anomalies: string[]; health_score: number }>
+```
+
+The function `POST`s `{ stats, action: 'get_pulse' }` to the edge function endpoint and returns:
+- `narrative` — A natural language description of business health
+- `anomalies` — Array of detected anomalies (e.g. unusual sales drop)
+- `health_score` — A 0–100 score; defaults to `100` on error
+
+<Note>
+  The `dashboard-intelligence` edge function requires the `GEMINI_API_KEY` secret set in your Supabase project. See the [AI Edge Functions](/admin/monitoring) section for deployment instructions.
+</Note>
+
+## CSV Export
+
+The dashboard header includes an export button that generates a CSV from current stats:
+
+```typescript
+const handleExport = () => {
+    const csvContent = [
+        ['Reporte de Ventas VSM Store'],
+        [`Periodo: ${dateRange.start} al ${dateRange.end}`],
+        ['Métricas Globales'],
+        ['Ventas Totales', stats.todaySales],
+        ['Pedidos Pendientes', stats.pendingOrders],
+        ['Total Clientes', stats.totalCustomers],
+        ['Top Productos'],
+        ['Producto', 'Unidades Vendidas', 'Ingresos'],
+        ...stats.topProducts.map(p => [p.name, p.sold, p.revenue]),
+    ].map(e => e.join(',')).join('\n');
+    // Creates a Blob and triggers download as vsm_reporte_YYYY-MM-DD_YYYY-MM-DD.csv
+};
+```
+
+## Command Palette Search
+
+The admin panel includes a keyboard-accessible command palette powered by `searchCommandPalette(query)`:
+
+```typescript
+export async function searchCommandPalette(query: string): Promise<{
+    products: { id: string; name: string }[];
+    orders: { id: string; order_number: string }[];
+    customers: { id: string; full_name: string; email: string }[];
+}>
+```
+
+Searches across products (by name), orders (by ID), and customers (by full name) simultaneously, returning up to 3 results per category.

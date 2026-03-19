@@ -1,0 +1,149 @@
+---
+title: "Customer Profile"
+description: "Profile management at /profile with address CRUD, loyalty tier badges, notification center, and personal statistics."
+---
+
+The customer profile section covers several authenticated routes where customers manage their account information, shipping addresses, notification preferences, and view personal statistics. All routes require authentication and are wrapped in `<ProtectedRoute>`.
+
+## Routes
+
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/profile` | `Profile` | Edit name, phone, WhatsApp, birthdate |
+| `/addresses` | `Addresses` | Manage shipping and billing addresses |
+| `/notifications` | `Notifications` | Notification center and preferences |
+| `/stats` | `Stats` | Personal purchase statistics |
+
+## Updating Profile Data
+
+`updateProfile()` from `auth.service.ts` performs a Supabase upsert on the `customer_profiles` table:
+
+```typescript
+export async function updateProfile(
+    userId: string,
+    data: {
+        full_name?: string;
+        phone?: string;
+        whatsapp?: string;
+        birthdate?: string;    // ISO date string, e.g. "1995-08-15"
+        avatar_url?: string;   // Supabase Storage URL
+        ia_context?: IAContext;
+    }
+): Promise<void>
+```
+
+The Profile page (`src/pages/Profile.tsx`) accesses the current profile via `useAuth().profile` and submits changes through a controlled form that calls `updateProfile(user.id, formData)`.
+
+## Address Management
+
+Addresses are stored in the `addresses` table with a one-to-many relationship to `customer_profiles`.
+
+### Address Interface
+
+```typescript
+interface Address {
+    id: string;
+    customer_id: string;            // Foreign key to customer_profiles.id
+    type: 'shipping' | 'billing';
+    street: string;
+    city: string;
+    state: string;
+    zip_code: string;
+    is_default: boolean;
+}
+```
+
+### CRUD Operations
+
+All address operations are in `src/services/addresses.service.ts`:
+
+<CardGroup cols={2}>
+  <Card title="getAddresses(customerId)" icon="list">
+    Returns all addresses for the authenticated customer. Used by `useAddresses()` hook with query key `['addresses']`.
+  </Card>
+  <Card title="createAddress(data)" icon="plus">
+    Inserts a new address. If `is_default: true`, the service first clears the default flag on all other addresses of the same type.
+  </Card>
+  <Card title="updateAddress(id, data)" icon="pencil">
+    Partial update on an existing address row.
+  </Card>
+  <Card title="deleteAddress(id)" icon="trash">
+    Deletes the address. The `Addresses` page shows a confirmation dialog before deletion.
+  </Card>
+</CardGroup>
+
+**`setDefault(addressId, customerId, type)`** — Sets a specific address as the default for its type (`'shipping'` or `'billing'`), clearing all other defaults for that type.
+
+### `useAddresses()` Hook
+
+```typescript
+import { useAddresses } from '@/hooks/useAddresses';
+
+const { data: addresses, isLoading } = useAddresses();
+// Query key: ['addresses']
+// Reads customer ID internally from useAuth().user.id
+```
+
+## Loyalty Tier Badges
+
+The Profile page prominently displays the customer's current loyalty tier using the `LoyaltyBadge` component (`src/components/loyalty/LoyaltyBadge.tsx`).
+
+### Tier Definitions
+
+| Tier | Minimum Spent | Badge Color | Benefits |
+|------|--------------|-------------|----------|
+| `bronze` | $0 MXN | Brown/copper | Base earn rate |
+| `silver` | Threshold 2 | Gray/silver | Increased earn rate, free shipping above minimum |
+| `gold` | Threshold 3 | Yellow/gold | Higher earn rate, free shipping |
+| `platinum` | Threshold 4 | Purple/platinum | Maximum earn rate, priority service |
+
+```typescript
+// The customer_tier field from CustomerProfile:
+customer_tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+```
+
+<Info>
+  Tier thresholds are configurable from the admin panel via `store_settings` and the `loyalty_config` JSON field. The defaults are defined in `src/lib/domain/loyalty.ts` as `LOYALTY_TIERS`.
+</Info>
+
+Progress toward the next tier is calculated by `getProgressToNextTier(totalSpent)` from `loyalty.service.ts`, which returns:
+
+```typescript
+{
+    currentTier: Tier;
+    nextTier: Tier;
+    progress: number;      // 0–100 percentage
+    remaining: number;     // MXN amount remaining to next tier
+}
+```
+
+## Personal Statistics (`/stats`)
+
+The `Stats` page (`src/pages/Stats.tsx`) displays aggregated purchase statistics for the authenticated customer.
+
+```typescript
+import { useStats } from '@/hooks/useStats';
+
+const { data: stats, isLoading } = useStats();
+// Query key: ['stats']
+// Backed by stats.service.ts which queries customer order history
+```
+
+Typical stats shown include total orders, total amount spent, average order value, most purchased products, and purchase frequency.
+
+## Notifications (`/notifications`)
+
+The Notifications page (`src/pages/user/Notifications.tsx`) renders the in-app notification history from the Zustand `notifications.store.ts`:
+
+```typescript
+interface NotificationsState {
+    notifications: Notification[];  // Max 50, LIFO order
+    addNotification(n: Notification): void;
+    removeNotification(id: string): void;
+    markAsRead(id: string): void;
+    markAllAsRead(): void;
+    clearAll(): void;
+}
+```
+
+Accessed via `useNotification()` hook (`src/hooks/useNotification.ts`). Notifications are **in-memory only** — they reset on page refresh.

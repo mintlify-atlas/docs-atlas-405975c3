@@ -1,0 +1,108 @@
+---
+title: "AI Features Overview"
+description: "Architecture overview for VSM Store's AI layer: nine Supabase Edge Functions powered by Google Gemini running on the Deno runtime."
+---
+
+VSM Store's AI features are implemented as **Supabase Edge Functions** deployed to Deno. Each function calls the Google Gemini REST API and returns structured JSON to the frontend. The functions are invoked either directly from admin services or via `supabase.functions.invoke()` from the client.
+
+## Architecture
+
+```
+React Frontend
+  └─ supabase.functions.invoke('function-name', { body: {...} })
+       └─ Supabase Edge Function (Deno runtime)
+            └─ Google Gemini REST API
+                 └─ gemini-2.0-flash / gemini-2.5-flash-lite / gemini-embedding-001
+```
+
+| Layer | Technology |
+|-------|------------|
+| Runtime | Deno (Supabase Edge Functions) |
+| Default model | `gemini-2.5-flash-lite` (most functions) |
+| Concierge models | `gemini-2.5-flash` (Analyst + Sommelier engines) |
+| Embeddings model | `gemini-embedding-001` (v1beta API) |
+| API base | `https://generativelanguage.googleapis.com/v1/` |
+| JWT verification | Disabled (`verify_jwt = false` in `config.toml`) |
+
+---
+
+## Required secrets
+
+Configure these in Supabase project settings under **Edge Functions → Secrets**:
+
+```bash
+GEMINI_API_KEY               # Google AI Studio API key
+SUPABASE_URL                 # Your Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY    # Full DB access key (used inside edge functions)
+```
+
+Not all functions need all three secrets. `dashboard-intelligence`, `voice-intelligence`, `product-intelligence`, and `embeddings-processor` only require `GEMINI_API_KEY`. The others need all three.
+
+---
+
+## Edge functions
+
+| Function | Purpose | Secrets needed |
+|----------|---------|----------------|
+| `inventory-oracle` | Stock depletion predictions and restock recommendations | All three |
+| `dashboard-intelligence` | Executive business insights for admin dashboard | `GEMINI_API_KEY` |
+| `customer-intelligence` | Multi-action: NLP concierge, WhatsApp copy, loyalty analysis, supplier messages | All three |
+| `voice-intelligence` | Natural language → structured search query conversion | `GEMINI_API_KEY` |
+| `product-intelligence` | AI product description and marketing copy generation | `GEMINI_API_KEY` |
+| `loyalty-intelligence` | Customer loyalty pattern analysis and personalised retention offers | All three |
+| `customer-narrative` | Contextual customer CRM narratives for admin panel | All three |
+| `bundle-intelligence` | Product bundle suggestions with AI-generated names and auto-coupons | All three |
+| `embeddings-processor` | Vector embeddings using `gemini-embedding-001` (v1beta API) | `GEMINI_API_KEY` |
+
+---
+
+## Migration history
+
+All functions were updated on **2026-03-15**:
+
+| Date | Change | Reason |
+|------|--------|--------|
+| 2026-03-15 | `v1beta` → `v1` endpoint | v1beta deprecated for generative models |
+| 2026-03-15 | `gemini-1.5-flash` → `gemini-2.0-flash` | Gemini 1.5 models retired |
+| 2026-03-15 | Removed `responseMimeType` from `generationConfig` | Parameter not supported in API v1 |
+
+**Exception:** `embeddings-processor` intentionally remains on the `v1beta` endpoint because `gemini-embedding-001` is only available there.
+
+---
+
+## CORS configuration
+
+All edge functions return the same CORS headers:
+
+```typescript
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+```
+
+Each function responds to `OPTIONS` preflight requests with `200 ok`.
+
+---
+
+## Calling from the frontend
+
+```typescript
+// Via Supabase client
+const { data, error } = await supabase.functions.invoke('loyalty-intelligence', {
+    body: { customerId: user.id }
+});
+
+// Direct fetch (used by admin-dashboard.service.ts for diagnostic purposes)
+const response = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/dashboard-intelligence`,
+    {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ stats, action: 'get_pulse' }),
+    }
+);
+```

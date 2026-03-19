@@ -1,0 +1,186 @@
+---
+title: "Product Catalog"
+description: "Dual-section vape and 420 product catalog with 13 hierarchical categories, dynamic filters, and slug-based routing."
+---
+
+The VSM Store catalog is organized into two independent sections — `vape` and `420` — each with its own category tree and URL namespace. Products are served from Supabase PostgreSQL with Row Level Security and filtered by `is_active = true`, `status = 'active'`, and `stock > 0` before reaching the storefront.
+
+## Routes
+
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/` | `Home` | Landing page with hero, flash deals, featured grid |
+| `/vape/:slug` | `SectionSlugResolver` | Vape product or category |
+| `/420/:slug` | `SectionSlugResolver` | 420 product or category |
+| `/buscar` | `SearchResults` | Live product search |
+
+## SectionSlugResolver
+
+`SectionSlugResolver` (`src/pages/SectionSlugResolver.tsx`) is the single router entry point for both sections. Given a `:slug` URL parameter, it determines whether the slug belongs to a **product** or a **category** and renders the appropriate page component.
+
+<Steps>
+  <Step title="Extract slug and section">
+    The component reads `section` from the route path prefix (`vape` or `420`) and `:slug` from the URL params.
+  </Step>
+  <Step title="Attempt product lookup">
+    Calls `getProductBySlug(slug, section)` from `products.service.ts`. If a product is returned, renders `<ProductDetail />`.
+  </Step>
+  <Step title="Attempt category lookup">
+    If no product matches, queries the `categories` table for a matching slug within the same section. If found, renders `<CategoryPage />`.
+  </Step>
+  <Step title="404 fallback">
+    If neither lookup succeeds, renders `<NotFound />`.
+  </Step>
+</Steps>
+
+## Category Structure
+
+Categories are stored in the `categories` table with a self-referential `parent_id` for hierarchy. There are 13 categories split across two sections:
+
+<CardGroup cols={2}>
+  <Card title="Vape Section" icon="wind">
+    - Mods
+    - Atomizadores
+    - Líquidos
+    - Coils
+    - Accesorios Vape
+  </Card>
+  <Card title="420 Section" icon="leaf">
+    - Vaporizers
+    - Fumables
+    - Comestibles
+    - Concentrados
+    - Tópicos
+    - Accesorios 420
+  </Card>
+</CardGroup>
+
+The `Category` TypeScript interface:
+
+```typescript
+interface Category {
+    id: string;
+    name: string;
+    slug: string;
+    section: 'vape' | '420';
+    parent_id: string | null;  // null = top-level, string = subcategory
+    order_index: number;
+    is_active: boolean;
+}
+```
+
+## Product Flags and Time Expiry
+
+Products support three boolean promotion flags, each with an optional expiry timestamp:
+
+```typescript
+is_featured: boolean;
+is_featured_until: string | null;  // ISO 8601 datetime
+
+is_new: boolean;
+is_new_until: string | null;
+
+is_bestseller: boolean;
+is_bestseller_until: string | null;
+```
+
+<Note>
+  The `_until` fields are informational — the admin panel uses them to schedule badge expiry. The storefront filters purely on the boolean flags; expiry enforcement is handled by the admin automation layer.
+</Note>
+
+## Product Status
+
+```typescript
+type ProductStatus = 'active' | 'legacy' | 'discontinued' | 'coming_soon';
+```
+
+| Status | Storefront behavior |
+|--------|--------------------|
+| `active` | Visible and purchasable |
+| `legacy` | May appear in search but `addItem` will still add it |
+| `discontinued` | Blocked from `addItem` in `cart.store.ts` |
+| `coming_soon` | Listed but not available for purchase |
+
+<Warning>
+  `getProducts()` in `products.service.ts` applies `.eq('status', 'active')` — only `active` products appear in catalog listings. Individual product detail pages (`getProductBySlug`) do **not** filter by status so discontinued products remain accessible by direct URL.
+</Warning>
+
+## `useProducts()` Hook
+
+The `useProducts` hook is a React Query wrapper over `getProducts()`. Query results are cached for **2 minutes** (`staleTime: 1000 * 60 * 2`).
+
+```typescript
+import { useProducts } from '@/hooks/useProducts';
+
+// All active products (paginated)
+const { data: products, isLoading } = useProducts();
+
+// Filter by section
+const { data: vapeProducts } = useProducts({ section: 'vape' });
+
+// Filter by category (single or multiple)
+const { data: byCategory } = useProducts({ categoryId: 'abc-123' });
+const { data: byCategories } = useProducts({ categoryId: ['abc-123', 'def-456'] });
+
+// Limit results
+const { data: limited } = useProducts({ section: '420', limit: 12 });
+```
+
+**`GetProductsOptions` interface** (from `products.service.ts`):
+
+```typescript
+interface GetProductsOptions {
+    section?: Section;            // 'vape' | '420'
+    categoryId?: string | string[]; // single or array of UUIDs
+    limit?: number;               // default: 50
+    offset?: number;              // default: 0
+    filter?: 'featured' | 'new' | 'bestseller';
+}
+```
+
+When `filter` is set, pagination is applied with `.limit(limit)`. Without `filter`, server-side range pagination uses `.range(offset, offset + limit - 1)`.
+
+### Specialized hooks
+
+```typescript
+// Featured products (is_featured = true)
+const { data } = useFeaturedProducts(section?: Section);
+// Query key: ['products', 'featured', section]
+
+// New products (is_new = true)
+const { data } = useNewProducts(section?: Section);
+// Query key: ['products', 'new', section]
+
+// Bestseller products (is_bestseller = true)
+const { data } = useBestsellerProducts({ section?, limit? });
+// Query key: ['products', 'bestseller', section, limit]
+
+// Recently added (last 14 days)
+const { data } = useRecentProducts(limit?: number);
+// Query key: ['products', 'recent', limit]
+
+// Discounted products (compare_at_price > price)
+const { data } = useDiscountedProducts(limit?: number);
+// Query key: ['products', 'discounted', limit]
+```
+
+## Product Variants
+
+Products may have variants stored in `product_variants`, nested via the Supabase join in `getProducts()`. The `mapProductVariations()` utility normalizes the joined data structure:
+
+```typescript
+export function mapProductVariations(data: Product[]): Product[];
+export function mapProductVariations(data: Product): Product;
+```
+
+Each variant carries its own `sku`, `price`, `stock`, and `images`. Variant options link to `product_attribute_values` (e.g., `"Nicotina": "3mg"`).
+
+## AI Strategy Fields
+
+The `Product` type includes AI-specific fields populated by the `product-intelligence` edge function:
+
+```typescript
+ai_is_featured: boolean;   // AI-recommended for featuring
+ai_sales_note: string | null; // Generated sales copy
+ai_exclude: boolean;       // Exclude from AI recommendations
+```

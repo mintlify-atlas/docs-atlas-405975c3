@@ -1,0 +1,138 @@
+---
+title: "Tech Stack"
+description: "Every major dependency in VSM Store, its version, and its role in the application."
+---
+
+## Runtime Dependencies
+
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| **Framework** | React | 18.3.1 | Declarative UI with hooks and concurrent features |
+| **Language** | TypeScript | ~5.6.2 | Static typing across the entire codebase |
+| **Bundler** | Vite | ^6.0.5 | Dev server with HMR + optimized production builds |
+| **Styles** | Tailwind CSS | ^3.4.17 | Utility-first CSS with custom theme extensions |
+| **Server State** | TanStack React Query | ^5.17.0 | Data fetching, caching, mutations, and background sync |
+| **Client State** | Zustand | ^5.0.11 | Lightweight global stores for cart and notifications |
+| **Backend / DB** | Supabase JS | ^2.39.0 | PostgreSQL client, Auth, Storage, and Realtime |
+| **Routing** | React Router DOM | ^6.22.0 | Client-side SPA routing |
+| **Icons** | Lucide React | ^0.574.0 | SVG icon library with tree-shaking |
+| **SEO** | react-helmet-async | ^2.0.5 | Dynamic `<head>` meta tags per page |
+| **Toasts** | react-hot-toast | ^2.4.1 | Lightweight toast notification system |
+| **Monitoring** | @sentry/react | ^10.39.0 | Error tracking, tracing, and session replays |
+| **Analytics** | Google Analytics 4 | — | E-commerce event tracking (`view_item`, `add_to_cart`, etc.) |
+| **Confetti** | canvas-confetti | ^1.9.4 | Celebration animations (loyalty milestones) |
+| **CSS Utils** | clsx | ^2.1.0 | Conditional class name composition |
+| **Hosting** | Cloudflare Pages | — | Global CDN deployment |
+| **Font** | Inter (Google Fonts) | 300–800 | Primary typeface |
+
+## Dev Dependencies
+
+| Package | Purpose |
+|---|---|
+| `@vitejs/plugin-react` | Babel-based JSX transform for Vite |
+| `autoprefixer` + `postcss` | PostCSS pipeline for Tailwind |
+| `sharp` | Build-time image optimization |
+| `eslint` + `typescript-eslint` | Linting with TypeScript-aware rules |
+| `dotenv` | Loads `.env` in Node scripts (e.g., sitemap generator) |
+
+## Vite Build Configuration
+
+`vite.config.ts` configures the build pipeline:
+
+```typescript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: true,
+    port: 5173,
+  },
+  resolve: {
+    alias: { '@': path.resolve(__dirname, './src') },
+  },
+  build: {
+    sourcemap: 'hidden',   // Generates .map files for Sentry; browser never downloads them
+    target: 'es2020',
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,    // Strips console.log in production
+        drop_debugger: true,
+      },
+    },
+  },
+})
+```
+
+### Key Build Options
+
+| Option | Value | Effect |
+|---|---|---|
+| `sourcemap` | `'hidden'` | Maps uploaded to Sentry; not served to end users |
+| `target` | `'es2020'` | Modern JS output; no IE11 support |
+| `minify` | `'terser'` | Smaller bundles than esbuild default |
+| `drop_console` | `true` | Removes all `console.*` calls from production builds |
+
+## Path Alias
+
+The `@` alias maps to `./src`, enabling clean absolute imports throughout the codebase:
+
+```typescript
+// vite.config.ts
+resolve: {
+  alias: { '@': path.resolve(__dirname, './src') },
+}
+```
+
+Usage in source files:
+
+```typescript
+import { supabase } from '@/lib/supabase';
+import type { Product } from '@/types/product';
+import { useCartStore } from '@/stores/cart.store';
+```
+
+`tsconfig.json` must mirror this alias for the TypeScript language server:
+
+```json
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+## TypeScript Configuration
+
+The project targets **TypeScript ~5.6.2** with strict settings. Key conventions:
+
+- Codebase written in **English** (variable names, comments, service functions)
+- UI text and user-facing messages in **Spanish (es-MX)**
+- Components exported as **named exports** (e.g., `export function ProductCard()`)
+- Services are plain exported async functions — no classes
+- Hooks are thin React Query wrappers over services
+
+Run `npm run typecheck` (`tsc --noEmit`) to validate types without emitting files.
+
+## ESLint Configuration
+
+Linting is configured in `eslint.config.js` using the flat config format with `typescript-eslint`. Run:
+
+```bash
+npm run lint         # Check only
+npm run lint:fix     # Auto-fix where possible
+```
+
+## Tailwind Theme Extensions
+
+`tailwind.config.js` extends the default theme with:
+
+- **Custom color scales:** `vape-50` → `vape-900` (blue), `herbal-50` → `herbal-900` (green)
+- **Semantic tokens:** `bg-theme-primary`, `bg-theme-secondary`, `bg-theme-tertiary`, `text-theme-primary`, `text-theme-secondary`, `border-theme`, `bg-accent-primary`, `text-accent-primary`
+- **CSS variable bridge:** Colors are defined as RGB channel triplets in `index.css` (`:root` for dark, `.light` for light mode) and consumed by Tailwind via `rgb(var(--token) / <alpha>)` syntax
+- **9 custom animations:** `fade-in`, `slide-up`, `slide-down`, `scale-in`, `shimmer`, `pulse-glow`, `float`, `aurora`, `spotlight`, `border-beam`

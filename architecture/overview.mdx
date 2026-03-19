@@ -1,0 +1,178 @@
+---
+title: "Architecture Overview"
+description: "How VSM Store is structured as a single-page application — provider tree, data flow, code splitting, and PWA setup."
+---
+
+## Application Type
+
+VSM Store is a **React 18 Single-Page Application (SPA)** bundled by Vite and deployed to **Cloudflare Pages** CDN. There is no server-side rendering. All routing happens client-side via React Router DOM v6.
+
+The SPA contains two distinct experiences under one deployment:
+
+- **Storefront** — public-facing catalog, cart, checkout, and authenticated user pages (profile, orders, loyalty, etc.)
+- **Admin Panel** (`/admin/*`) — completely separate layout with its own sidebar, guarded by `AdminGuard`, lazy-loaded into a separate `admin-panel` chunk
+
+## Provider Tree
+
+`src/main.tsx` composes the full provider hierarchy before rendering `<App />`:
+
+```
+React.StrictMode
+  └─ ErrorBoundary
+       └─ BrowserRouter
+            └─ ThemeProvider        (dark/light theme, localStorage 'vsm-theme')
+                 └─ AuthProvider    (Supabase auth + customer_profiles)
+                      └─ QueryClientProvider   (React Query, staleTime: 5 min)
+                           └─ HelmetProvider   (SEO meta tags)
+                                └─ SafetyProvider
+                                     └─ App
+```
+
+```tsx
+ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+        <ErrorBoundary>
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+                <ThemeProvider>
+                    <AuthProvider>
+                        <QueryClientProvider client={queryClient}>
+                            <HelmetProvider>
+                                <SafetyProvider>
+                                    <App />
+                                </SafetyProvider>
+                            </HelmetProvider>
+                        </QueryClientProvider>
+                    </AuthProvider>
+                </ThemeProvider>
+            </BrowserRouter>
+        </ErrorBoundary>
+    </React.StrictMode>,
+);
+```
+
+<Note>
+  `react-hot-toast`'s `<Toaster>` is mounted inside `App` rather than in the provider tree so that admin and storefront can each configure their own toast position and styles.
+</Note>
+
+## Data Flow
+
+```
+Supabase PostgreSQL (with RLS policies)
+    ↓
+Services  (src/services/*.service.ts)
+    — async functions wrapping supabase client calls
+    ↓
+Hooks  (src/hooks/use*.ts)
+    — React Query useQuery / useMutation wrappers
+    — define queryKey, queryFn, and staleTime
+    ↓
+Components + Pages  (src/components/ + src/pages/)
+    — consume hooks, render data, dispatch mutations
+    ↓
+UI rendered to the user
+```
+
+Zustand stores (cart, notifications) sit alongside this flow for purely client-side state that does not require server synchronisation.
+
+## Lazy Loading and Code Splitting
+
+Every page component is wrapped in `React.lazy()` so it is not included in the initial bundle:
+
+```tsx
+// Storefront pages
+const Home = lazy(() => import('@/pages/Home').then(m => ({ default: m.Home })));
+const SearchResults = lazy(() => import('@/pages/SearchResults').then(m => ({ default: m.SearchResults })));
+
+// Admin pages — load only when /admin/* is visited
+const AdminDashboard = lazy(() => import('@/pages/admin/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
+const AdminGuard = lazy(() => import('@/components/admin/AdminGuard').then(m => ({ default: m.AdminGuard })));
+```
+
+All lazy components are wrapped in `<Suspense fallback={<PageLoader />}>`. The `PageLoader` is a minimal spinning indicator that does not depend on any provider.
+
+### Vite Manual Chunks
+
+The `vite.config.ts` defines a `manualChunks` strategy (currently toggled off but documented) that splits the bundle into separately cacheable chunks:
+
+| Chunk name | Contents |
+|---|---|
+| `vendor-react` | `react`, `react-dom`, `scheduler` |
+| `vendor-sentry` | `@sentry/*` |
+| `vendor-supabase` | `@supabase/*` |
+| `vendor-query` | `@tanstack/*` |
+| `vendor-router` | `react-router*` |
+| `vendor-framer` | `framer-motion` |
+| `vendor-zod` | `zod` |
+| `admin-panel` | Everything under `src/pages/admin/` |
+| `legal-pages` | Legal pages |
+
+This means a product catalog update only invalidates the application chunk — vendor chunks remain cached.
+
+## Storefront vs Admin Separation
+
+`App.tsx` branches on `pathname.startsWith('/admin')` before rendering:
+
+```tsx
+if (isAdmin) {
+    return (
+        <Suspense fallback={<PageLoader />}>
+            <AdminGuard>
+                <AdminLayout>
+                    <AdminErrorBoundary>
+                        <Routes>{/* admin routes only */}</Routes>
+                    </AdminErrorBoundary>
+                </AdminLayout>
+            </AdminGuard>
+        </Suspense>
+    );
+}
+```
+
+**Admin panel characteristics:**
+- No storefront `<Header>`, `<Footer>`, `<CartSidebar>`, or `<WhatsAppFloat>`
+- `AdminGuard` queries the `admin_users` Supabase table; non-admins are redirected
+- `AdminLayout` renders its own sidebar navigation
+- All admin pages are in a separate lazy chunk so they are never downloaded by storefront visitors
+
+## PWA Configuration
+
+VSM Store is an installable Progressive Web App:
+
+| Asset | Location | Purpose |
+|---|---|---|
+| `manifest.json` | `/public/manifest.json` | App name, icons, display mode |
+| Service Worker | `/public/sw.js` | Offline support and caching |
+| Icons | `/public/icons/` | 96×96 and 192×192 PNG icons |
+
+The service worker is registered in `main.tsx`:
+
+```typescript
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker
+            .register('/sw.js')
+            .catch((err) => {
+                if (import.meta.env.DEV) console.error('[PWA] SW error:', err);
+            });
+    });
+}
+```
+
+`index.html` includes the standard PWA meta tags:
+- `apple-mobile-web-app-capable: yes`
+- `theme-color: #0f172a` (slate-900, the dark mode background)
+
+<Note>
+  `main.tsx` includes a cache-busting routine (`VSM_VERSION = 'W143-RECOVERY-A'`) that unregisters stale service workers and clears caches on version mismatch. This was added to recover from a cache poisoning incident and runs on every fresh load.
+</Note>
+
+## Error Handling
+
+| Layer | Mechanism |
+|---|---|
+| Root | `<ErrorBoundary>` wraps the entire tree in `main.tsx` |
+| Storefront root | `<ErrorBoundary componentName="StorefrontRoot">` in `App.tsx` |
+| Individual routes | Additional `<ErrorBoundary>` inside `<Suspense>` |
+| Admin | `<AdminErrorBoundary>` wraps all admin routes |
+| Services | `try/catch` with `console.error` + re-throw; Sentry captures in production |
+| React Query | Global `QueryCache.onError` and `MutationCache.onError` log to Sentry and add a notification |

@@ -1,0 +1,180 @@
+---
+title: "Store Settings"
+description: "Dynamic store configuration — WhatsApp, social links, payment methods, bank account, loyalty program, and location settings at /admin/settings."
+---
+
+Store settings are managed at `/admin/settings`. All settings are stored in a single row in the `store_settings` table (row `id = 1`) and surfaced through a form split into four lego panels: WhatsApp, Social, Payment, and General.
+
+## store_settings Table
+
+The `store_settings` table uses a structured single-row approach (not key-value pairs). The full schema:
+
+```typescript
+export interface StoreSettings {
+    id: number;                        // Always 1 — singleton row
+    site_name: string;
+    description: string | null;
+    logo_url: string | null;
+    whatsapp_number: string;           // International format without +
+    whatsapp_default_message: string | null;
+    social_links: {
+        facebook?: string;
+        instagram?: string;
+        youtube?: string;
+        tiktok?: string;
+    } | null;
+    location_address: string | null;
+    location_city: string | null;
+    location_map_url: string | null;
+    bank_account_info: string | null;  // Multiline: Bank, Account, CLABE, Beneficiary
+    payment_methods: {
+        transfer: boolean;
+        mercadopago: boolean;
+        cash: boolean;
+    } | null;
+    hero_sliders: HeroSlider[] | null;             // MegaHero slider config
+    featured_categories: FeaturedCategory[] | null; // Home page featured categories
+    loyalty_config: LoyaltyConfig | null;           // Loyalty program rules
+    loyalty_tiers_config: LoyaltyTier[] | null;     // Bronze/Silver/Gold/Platinum thresholds
+    flash_deals_end: string | null;                 // ISO timestamp for flash deal expiry
+    is_ai_assistant_enabled: boolean;              // Enable/disable Cesarin OS
+    pilot_runbook_status: PilotRunbookItem[] | null;
+}
+```
+
+## Service Functions
+
+### getStoreSettings
+
+```typescript
+export async function getStoreSettings(): Promise<StoreSettings | null>
+```
+
+Fetches the single settings row (`id = 1`). Returns `null` if the table doesn't exist or the row is missing, logging a warning rather than throwing.
+
+### updateStoreSettings
+
+```typescript
+export async function updateStoreSettings(
+    settings: Partial<StoreSettings>
+): Promise<StoreSettings>
+```
+
+Updates the singleton row (`id = 1`). The `id` field is stripped from the payload before the `UPDATE` call. Returns the full updated settings row.
+
+## AdminSettings Form Panels
+
+<Tabs>
+  <Tab title="WhatsApp">
+    Configured via `WhatsAppSettings` component:
+    - `whatsapp_number` — Phone number in international format without `+` (e.g. `5212281234567`)
+    - `whatsapp_default_message` — Pre-filled message when customers tap the WhatsApp float button
+  </Tab>
+  <Tab title="Social">
+    Configured via `SocialSettings` component:
+    - `social_links.facebook`
+    - `social_links.instagram`
+    - `social_links.youtube`
+    - `social_links.tiktok`
+  </Tab>
+  <Tab title="Payment">
+    Configured via `PaymentSettings` component:
+    - `payment_methods.transfer` — Bank transfer enabled/disabled
+    - `payment_methods.mercadopago` — Mercado Pago enabled/disabled
+    - `payment_methods.cash` — Cash on delivery enabled/disabled
+    - `bank_account_info` — Multiline string displayed at checkout for transfer payments
+  </Tab>
+  <Tab title="General">
+    Configured via `GeneralSettings` component:
+    - `site_name`
+    - `description`
+    - `location_address`
+    - `location_city`
+    - `location_map_url`
+  </Tab>
+</Tabs>
+
+## Loyalty Configuration
+
+The `loyalty_config` JSONB column controls the V-Coins loyalty program:
+
+```typescript
+export interface LoyaltyConfig {
+    points_per_currency: number;   // Points earned per MXN spent (default: 1)
+    currency_per_point: number;    // MXN value of each redeemed point (default: 0.1)
+    min_points_to_redeem: number;  // Minimum balance required to redeem (default: 100)
+    max_points_per_order: number;  // Cap on points applied per order (default: 1000)
+    points_expiry_days: number;    // Days before points expire (default: 365)
+    enable_loyalty: boolean;       // Master switch
+}
+```
+
+Default values used by `AdminSettings` when no settings are saved:
+```typescript
+const DEFAULT_LOYALTY: LoyaltyConfig = {
+    points_per_currency: 1,
+    currency_per_point: 0.1,
+    min_points_to_redeem: 100,
+    max_points_per_order: 1000,
+    points_expiry_days: 365,
+    enable_loyalty: true,
+};
+```
+
+## SITE_CONFIG (Static Defaults)
+
+The `SITE_CONFIG` in `src/config/site.ts` provides compile-time defaults. These are used as fallbacks when dynamic settings have not been configured:
+
+```typescript
+export const SITE_CONFIG = {
+    name: 'VSM Store',
+    description: 'Tu tienda de vape y productos 420',
+    logo: '/logo-vsm.png',
+    whatsapp: {
+        number: '5212281234567',
+        defaultMessage: 'Hola, vengo de VSM Store y quiero hacer un pedido',
+    },
+    contact: {
+        email: 'ayuda@vsmstore.com',
+        phone: '2281234567',
+    },
+    location: {
+        address: 'Av. Principal #123, Col. Centro',
+        city: 'Xalapa',
+        state: 'Veracruz',
+        zipCode: '91000',
+        country: 'México',
+    },
+    bankAccount: `Banco: BBVA\nCuenta: 0123456789\nCLABE: 012000001234567890\nBeneficiario: VSM Store`,
+    social: {
+        facebook: 'https://www.facebook.com/vsmstore',
+        instagram: 'https://www.instagram.com/vsmstore',
+        youtube: 'https://www.youtube.com/@vsmstore',
+        tiktok: 'https://www.tiktok.com/@vsmstore',
+        whatsapp: 'https://wa.me/5212281234567',
+    },
+    store: {
+        currency: 'MXN',
+        currencySymbol: '$',
+        locale: 'es-MX',
+        timezone: 'America/Mexico_City',
+    },
+} as const;
+```
+
+<Note>
+  `SITE_CONFIG` is a compile-time constant. To change values in production without redeploying, use `store_settings` via the Admin Settings page. The app reads dynamic settings from `store_settings` at runtime and falls back to `SITE_CONFIG` if settings are unavailable.
+</Note>
+
+## Form State Management
+
+`AdminSettings` uses prefix routing in `handleChange` to route input changes to the correct nested state:
+
+| Input name prefix | Target field |
+|-------------------|--------------|
+| `social_` | `formData.social_links[key]` |
+| `loyalty_` | `formData.loyalty_config[key]` |
+| `payment_` | `formData.payment_methods[key]` |
+| _(none)_ | `formData[name]` directly |
+
+Save is triggered by `handleSubmit`, which calls `updateMutation.mutateAsync()` with the full form state merged with `{ id: STORE_SETTINGS_ID }` (constant = `1`).

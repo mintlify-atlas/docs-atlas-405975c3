@@ -1,0 +1,306 @@
+---
+title: "React Query Hooks"
+description: "Custom hooks that wrap service functions with React Query caching, providing automatic stale-time management, query invalidation, and mutation handling."
+---
+
+All hooks are thin wrappers around service functions using `useQuery` or `useMutation` from `@tanstack/react-query` v5. The `QueryClient` is configured with a global `staleTime` of **5 minutes** for most data, with tighter windows for frequently-changing data.
+
+## staleTime configuration
+
+| Hook category | staleTime |
+|--------------|----------|
+| Products (inventory) | 2 minutes (`PRODUCTS_STALE_TIME`) |
+| Product detail | 1 minute (`PRODUCT_DETAIL_STALE_TIME`) |
+| Orders | 2 minutes (`ORDERS_STALE_TIME`) |
+| Order detail | 1 minute (`ORDER_DETAIL_STALE_TIME`) |
+| Points balance | 5 minutes (`POINTS_STALE_TIME`) |
+
+---
+
+## Product hooks
+
+Defined in `src/hooks/useProducts.ts`.
+
+### useProducts()
+
+```typescript
+export function useProducts(options?: {
+    section?: Section;
+    categoryId?: string | string[];
+    limit?: number;
+})
+```
+
+**Query key:** `['products', options?.section, options?.categoryId, options?.limit]`
+
+Fetches storefront products with optional filters. Uses `keepPreviousData` to avoid flash during option changes.
+
+```typescript
+import { useProducts } from '@/hooks/useProducts';
+
+function VapeGrid() {
+    const { data: products, isLoading } = useProducts({
+        section: 'vape',
+        categoryId: 'category-uuid',
+        limit: 30,
+    });
+    // ...
+}
+```
+
+### useFeaturedProducts()
+
+```typescript
+export function useFeaturedProducts(section?: Section)
+```
+
+**Query key:** `['products', 'featured', section]`
+
+```typescript
+const { data: featured } = useFeaturedProducts('vape');
+```
+
+### useNewProducts()
+
+```typescript
+export function useNewProducts(section?: Section)
+```
+
+**Query key:** `['products', 'new', section]`
+
+### useBestsellerProducts()
+
+```typescript
+export function useBestsellerProducts(options?: { section?: Section; limit?: number })
+```
+
+**Query key:** `['products', 'bestseller', options?.section, options?.limit]`
+
+### useRecentProducts()
+
+```typescript
+export function useRecentProducts(limit: number = 20)
+```
+
+**Query key:** `['products', 'recent', limit]`  
+Returns products added within the last 14 days.
+
+### useDiscountedProducts()
+
+```typescript
+export function useDiscountedProducts(limit: number = 50)
+```
+
+**Query key:** `['products', 'discounted', limit]`
+
+### useProductBySlug()
+
+```typescript
+export function useProductBySlug(slug: string, section: Section)
+```
+
+**Query key:** `['products', 'detail', section, slug]`  
+Only fires when both `slug` and `section` are truthy (`enabled: !!slug && !!section`). Uses the tighter 1-minute staleTime.
+
+```typescript
+function ProductPage({ slug, section }) {
+    const { data: product, isLoading, error } = useProductBySlug(slug, section);
+    if (!product) return <NotFound />;
+}
+```
+
+---
+
+## Order hooks
+
+Defined in `src/hooks/useOrders.ts`.
+
+### useCustomerOrders()
+
+```typescript
+export function useCustomerOrders(customerId: string | undefined)
+```
+
+**Query key:** `['orders', customerId]`  
+Only fires when `customerId` is defined (`enabled: !!customerId`).
+
+```typescript
+const { data: orders } = useCustomerOrders(user?.id);
+```
+
+### useOrder()
+
+```typescript
+export function useOrder(orderId: string | undefined)
+```
+
+**Query key:** `['orders', 'detail', orderId]`  
+Fetches a single order. Disabled when `orderId` is undefined.
+
+### useCreateOrder()
+
+Mutation hook. On success, invalidates three query keys:
+- `['orders', variables.customer_id]` — refreshes order list
+- `['loyalty', 'balance', variables.customer_id]` — refreshes points balance
+- `['loyalty', 'tier', variables.customer_id]` — refreshes tier status
+
+```typescript
+import { useCreateOrder } from '@/hooks/useOrders';
+
+function CheckoutButton() {
+    const createOrder = useCreateOrder();
+
+    const handleSubmit = () => {
+        createOrder.mutate(
+            {
+                customer_id: user.id,
+                items: cartItems,
+                subtotal: 1299,
+                total: 1299,
+                payment_method: 'whatsapp',
+            },
+            {
+                onSuccess: (order) => {
+                    navigate(`/orders/${order.id}`);
+                },
+                onError: (error) => {
+                    toast.error('Error creating order');
+                },
+            }
+        );
+    };
+}
+```
+
+### usePointsBalance()
+
+```typescript
+export function usePointsBalance(customerId: string | undefined)
+```
+
+**Query key:** `['points', customerId]`  
+Calls `getPointsBalance()` which uses the `get_customer_points_balance` Supabase RPC.
+
+### useOrderTracking()
+
+Mutation hook that calls `getTrackingInfo(trackingNumber)` to look up shipment status.
+
+```typescript
+const tracking = useOrderTracking();
+tracking.mutate('DHL1234567890');
+```
+
+---
+
+## Auth hook
+
+Defined in `src/hooks/useAuth.ts`.
+
+### useAuth()
+
+```typescript
+export function useAuth()
+```
+
+Reads from `AuthContext`. Must be called inside `<AuthProvider>`. Throws an error if used outside the provider tree.
+
+```typescript
+import { useAuth } from '@/hooks/useAuth';
+
+const { user, profile, signIn, signUp, signOut, loading } = useAuth();
+```
+
+---
+
+## Search hook
+
+### useSearch()
+
+```typescript
+// src/hooks/useSearch.ts
+export function useSearch(query: string, options?: { section?: Section })
+```
+
+**Query key:** debounced  
+Implements debouncing internally so search queries are not fired on every keystroke. Wraps `searchProducts()` from `search.service.ts`, which searches `name`, `short_description`, `description`, `sku`, and `tags`.
+
+```typescript
+function SearchOverlay() {
+    const [query, setQuery] = useState('');
+    const { data: results, isLoading } = useSearch(query);
+}
+```
+
+---
+
+## Additional hooks
+
+### useAppMonitoring()
+
+```typescript
+// src/hooks/useAppMonitoring.ts
+export function useAppMonitoring()
+```
+
+Initialises Sentry monitoring and tracks user presence. Called once at the app root. Has no return value used directly by components.
+
+### useCategories() / useCategoriesBySection()
+
+```typescript
+// src/hooks/useCategories.ts
+export function useCategories(section?: Section)
+export function useCategoriesWithChildren(section?: Section)
+```
+
+**Query key:** `['categories', section]`
+
+### useCoupons()
+
+**Query key:** `['coupons']`
+
+### useLoyalty()
+
+**Query key:** `['loyalty']` — fetches tier info, history, and redemption options.
+
+### useStoreSettings()
+
+**Query key:** `['store-settings']`
+
+### useStats()
+
+**Query key:** `['stats']` — user-level purchase statistics.
+
+### useAddresses()
+
+**Query key:** `['addresses']` — current user's saved addresses.
+
+---
+
+## Complete hook reference
+
+| Hook | Query Key | Service |
+|------|-----------|--------|
+| `useProducts(options?)` | `['products', section, categoryId, limit]` | `products.service` |
+| `useFeaturedProducts(section?)` | `['products', 'featured', section]` | `products.service` |
+| `useNewProducts(section?)` | `['products', 'new', section]` | `products.service` |
+| `useBestsellerProducts(options?)` | `['products', 'bestseller', section, limit]` | `products.service` |
+| `useRecentProducts(limit?)` | `['products', 'recent', limit]` | `products.service` |
+| `useDiscountedProducts(limit?)` | `['products', 'discounted', limit]` | `products.service` |
+| `useProductBySlug(slug, section)` | `['products', 'detail', section, slug]` | `products.service` |
+| `useCustomerOrders(customerId?)` | `['orders', customerId]` | `orders.service` |
+| `useOrder(orderId?)` | `['orders', 'detail', orderId]` | `orders.service` |
+| `useCreateOrder()` | mutation → invalidates `['orders']`, `['loyalty']` | `orders.service` |
+| `usePointsBalance(customerId?)` | `['points', customerId]` | `loyalty.service` (RPC) |
+| `useOrderTracking()` | mutation | `orders.service` |
+| `useCategories(section?)` | `['categories', section]` | `categories.service` |
+| `useSearch(query)` | debounced | `search.service` |
+| `useAuth()` | — (context) | `AuthContext` |
+| `useAddresses()` | `['addresses']` | `addresses.service` |
+| `useCoupons()` | `['coupons']` | `coupons.service` |
+| `useLoyalty()` | `['loyalty']` | `loyalty.service` |
+| `useStoreSettings()` | `['store-settings']` | `settings.service` |
+| `useStats()` | `['stats']` | `stats.service` |
+| `useDebounce(value, delay)` | — | Generic utility |
+| `useHaptic()` | — | `Navigator.vibrate` API |
+| `useNotification()` | — | `notifications.store` |
+| `useAppMonitoring()` | — | Sentry init |

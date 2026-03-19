@@ -1,0 +1,74 @@
+---
+title: "Introduction"
+description: "VSM Store is a full-featured PWA e-commerce platform built for Vape Store Mexico in Xalapa, Veracruz."
+---
+
+## What is VSM Store?
+
+**VSM Store** is a B2C Progressive Web App (PWA) for **VSM (Vape Store Mexico)**, a specialty retailer located in Xalapa, Veracruz, México. The platform serves a dual-section catalog — vape hardware and accessories (`vape`) alongside cannabis-related products (`420`) — with all pricing in **MXN (Mexican Pesos)** and the locale set to `es-MX`.
+
+The application ships as a **single-page application (SPA)** deployed on **Cloudflare Pages** at [vsm-store.pages.dev](https://vsm-store.pages.dev). It bundles a full customer storefront and a complete admin panel into one codebase, separated by route prefixes and lazy-loaded code chunks.
+
+## Business Model
+
+- **~40 products** divided across two catalog sections: `vape` and `420`
+- **13 hierarchical categories** with subcategory support via `parent_id`
+- **Checkout via WhatsApp** with auto-formatted order messages, plus Mercado Pago integration (partially implemented)
+- **Four-tier loyalty program:** Bronze → Silver → Gold → Platinum, earning 10 points per $100 MXN spent
+- **Currency:** MXN — all prices formatted with `es-MX` locale
+
+## Key Capabilities
+
+<CardGroup cols={2}>
+  <Card title="Customer Storefront" icon="store">
+    Public catalog with section/category filtering, live search, product detail pages, persistent cart, and a full checkout flow.
+  </Card>
+  <Card title="Admin Panel" icon="shield-check">
+    Integrated admin panel at `/admin` with full CRUD for products, categories, orders, customers, coupons, and store settings.
+  </Card>
+  <Card title="Authentication & Profiles" icon="user">
+    Supabase-backed auth with customer profile tiers, address management, order history, and a loyalty dashboard.
+  </Card>
+  <Card title="PWA & Performance" icon="bolt">
+    Installable PWA with service worker, code splitting via Vite manual chunks, lazy-loaded routes, and Cloudflare CDN delivery.
+  </Card>
+  <Card title="Monitoring" icon="chart-line">
+    Sentry error tracking with session replay, Google Analytics 4 e-commerce events, and an in-app AdminMonitoring page.
+  </Card>
+  <Card title="AI Edge Functions" icon="brain">
+    Nine Supabase Edge Functions (Deno runtime) powered by Gemini 2.0 Flash for inventory forecasting, customer intelligence, and product copy generation.
+  </Card>
+</CardGroup>
+
+## Tech Stack Highlights
+
+| Layer | Technology | Version |
+|---|---|---|
+| Framework | React | 18.3.1 |
+| Language | TypeScript | ~5.6.2 |
+| Bundler | Vite | ^6.0.5 |
+| Styles | Tailwind CSS | ^3.4.17 |
+| Server State | TanStack React Query | ^5.17.0 |
+| Client State | Zustand | ^5.0.11 |
+| Backend / DB | Supabase | ^2.39.0 |
+| Routing | React Router DOM | ^6.22.0 |
+| Hosting | Cloudflare Pages | — |
+
+See the full dependency breakdown in [Tech Stack](/architecture/tech-stack).
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, configure environment variables, run migrations, and start the dev server in minutes.
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Understand the SPA structure, provider tree, data flow, and how the storefront and admin panel are separated.
+  </Card>
+  <Card title="Database Schema" icon="database" href="/architecture/database">
+    Explore all Supabase tables, RLS policies, TypeScript types, and the full migration history.
+  </Card>
+  <Card title="State Management" icon="arrows-rotate" href="/architecture/state-management">
+    Learn how Zustand stores, React Context, and React Query work together to manage application state.
+  </Card>
+</CardGroup>

@@ -1,0 +1,152 @@
+---
+title: "Coupon Management"
+description: "Create and manage discount coupons — fixed or percentage discounts with usage limits, date ranges, and AI-powered generation."
+---
+
+Coupons are managed at `/admin/coupons`. They support percentage and fixed-amount discounts with optional minimum purchase requirements, maximum usage caps, and validity windows.
+
+## Coupons Table Fields
+
+```typescript
+export interface AdminCoupon {
+    code: string;                          // Primary key — unique coupon code (e.g. 'VAPE20')
+    description: string | null;            // Internal description for admin reference
+    discount_type: 'percentage' | 'fixed'; // Discount calculation method
+    discount_value: number;                // Amount — e.g. 20 for 20% or $20 MXN off
+    min_purchase: number;                  // Minimum order subtotal to apply coupon
+    max_uses: number | null;               // null = unlimited uses
+    used_count: number;                    // How many times coupon has been redeemed
+    is_active: boolean;
+    valid_from: string | null;             // ISO timestamp — coupon not valid before this
+    valid_until: string | null;            // ISO timestamp — coupon expires after this
+    created_at?: string;
+    customer_id?: string | null;           // Optional: restrict to a specific customer
+}
+```
+
+## Discount Types
+
+| Type | Value | Example |
+|------|-------|---------|
+| Percentage | `'percentage'` | `discount_value: 15` → 15% off the subtotal |
+| Fixed Amount | `'fixed'` | `discount_value: 50` → $50 MXN off the subtotal |
+
+## CRUD Functions
+
+### getAllCoupons
+
+```typescript
+export async function getAllCoupons(): Promise<AdminCoupon[]>
+```
+
+Fetches all coupons ordered by code alphabetically. Returns full coupon data including `used_count`.
+
+### createCoupon
+
+```typescript
+export async function createCoupon(
+    coupon: CouponFormData
+): Promise<AdminCoupon>
+```
+
+`CouponFormData` is identical to `AdminCoupon` minus the `used_count` (initialized to `0` on creation).
+
+### updateCoupon
+
+```typescript
+export async function updateCoupon(
+    code: string,
+    coupon: Partial<CouponFormData>
+): Promise<AdminCoupon>
+```
+
+The `code` is the primary key. Changing the code requires deleting and recreating the coupon.
+
+### deleteCoupon
+
+```typescript
+export async function deleteCoupon(code: string): Promise<void>
+```
+
+<Note>
+  `deleteCoupon` performs a **soft delete** — it sets `is_active = false` rather than deleting the row. This preserves the coupon's `used_count` history and any order records that reference the code.
+</Note>
+
+## Coupon Validation Flow (Storefront)
+
+In the storefront checkout, coupons are validated via `coupons.service.ts`:
+
+<Steps>
+  <Step title="Customer enters code">
+    The checkout form calls `validateCoupon(code)` from `coupons.service.ts`.
+  </Step>
+  <Step title="Database lookup">
+    The service queries the `coupons` table for a row matching `code` where `is_active = true`.
+  </Step>
+  <Step title="Business rule checks">
+    The service validates:
+    - `valid_from` ≤ current time (if set)
+    - `valid_until` ≥ current time (if set)
+    - `used_count` < `max_uses` (if `max_uses` is not null)
+    - Cart subtotal ≥ `min_purchase`
+  </Step>
+  <Step title="Apply discount">
+    On success, the coupon is applied to the order. On order creation, `used_count` is incremented.
+  </Step>
+</Steps>
+
+## SQL: Create a Test Coupon
+
+```sql
+INSERT INTO coupons (
+    code,
+    description,
+    discount_type,
+    discount_value,
+    min_purchase,
+    max_uses,
+    used_count,
+    is_active,
+    valid_from,
+    valid_until
+) VALUES (
+    'LAUNCH20',
+    'Launch promotion — 20% off orders over $300',
+    'percentage',
+    20,
+    300,
+    100,
+    0,
+    true,
+    NOW(),
+    NOW() + INTERVAL '30 days'
+);
+```
+
+## AI Coupon Generation
+
+### generateCouponMagic
+
+```typescript
+export async function generateCouponMagic(
+    goal: 'conversion' | 'retention' | 'clearance'
+): Promise<{ code: string; discount_value: number; description: string }>
+```
+
+Calls the `marketing-intelligence` edge function with `action: 'generate_coupon'`. Returns an AI-suggested coupon code, discount value, and description tuned for the specified business goal:
+
+| Goal | Intent |
+|------|--------|
+| `conversion` | Convert first-time visitors or cart abandoners |
+| `retention` | Win back lapsed customers |
+| `clearance` | Move excess inventory quickly |
+
+### forecastCouponImpact
+
+```typescript
+export async function forecastCouponImpact(
+    coupon: CouponFormData
+): Promise<{ reach: number; potential_revenue: number; recommendation: string }>
+```
+
+Calls `marketing-intelligence` with `action: 'forecast_impact'`. Analyzes the coupon's parameters against historical order data to forecast estimated customer reach, potential revenue impact, and a strategic recommendation before the coupon goes live.

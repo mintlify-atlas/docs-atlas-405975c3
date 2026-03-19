@@ -1,0 +1,183 @@
+---
+title: "Order Management"
+description: "Full order lifecycle management — status updates, Kanban board, CSV export, bulk actions, and order detail drawer at /admin/orders."
+---
+
+Orders are managed at `/admin/orders`. The page supports two view modes: a paginated **list view** with status filters, and a **Kanban board** view for drag-and-drop status management. Both views share the same `useAdminOrders` hook.
+
+## Order Status Values
+
+Orders use English status keys in the database. The domain module provides labels and colors:
+
+```typescript
+// src/lib/domain/orders.ts
+export const ADMIN_ORDER_STATUS = {
+    pending:    { label: 'Pendiente',  color: '#f59e0b' },
+    confirmed:  { label: 'Confirmado', color: '#3b82f6' },
+    processing: { label: 'Preparando', color: '#8b5cf6' },
+    shipped:    { label: 'Enviado',    color: '#06b6d4' },
+    delivered:  { label: 'Entregado', color: '#10b981' },
+    cancelled:  { label: 'Cancelado', color: '#ef4444' },
+} as const;
+
+export type AdminOrderStatus = keyof typeof ADMIN_ORDER_STATUS;
+// 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled'
+```
+
+## Valid Status Transitions
+
+Not every status change is valid. The domain layer defines allowed transitions:
+
+| From | Can Transition To |
+|------|-------------------|
+| `pending` | `confirmed`, `cancelled` |
+| `confirmed` | `processing`, `cancelled` |
+| `processing` | `shipped`, `cancelled` |
+| `shipped` | `delivered` |
+| `delivered` | _(terminal — no further transitions)_ |
+| `cancelled` | _(terminal — no further transitions)_ |
+
+```typescript
+export const ORDER_STATUS_TRANSITIONS: Record<AdminOrderStatus, AdminOrderStatus[]> = {
+    pending: ['confirmed', 'cancelled'],
+    confirmed: ['processing', 'cancelled'],
+    processing: ['shipped', 'cancelled'],
+    shipped: ['delivered'],
+    delivered: [],
+    cancelled: [],
+};
+```
+
+## CRUD Functions
+
+### getAllOrders
+
+```typescript
+export async function getAllOrders(
+    statusFilter?: OrderStatus
+): Promise<AdminOrder[]>
+```
+
+Fetches all orders ordered by `created_at` descending. If `statusFilter` is provided, only orders with that status are returned. Customer name and phone are resolved from `customer_profiles` (for registered users) or the shipping address record (for guests).
+
+### updateOrderStatus
+
+```typescript
+export async function updateOrderStatus(
+    orderId: string,
+    status: OrderStatus
+): Promise<void>
+```
+
+Updates the order status and sets `updated_at`. **Automation:** When transitioning to `processing`, `shipped`, or `delivered`, `payment_status` is automatically set to `'paid'`.
+
+### updateOrderPaymentStatus
+
+```typescript
+export async function updateOrderPaymentStatus(
+    orderId: string,
+    paymentStatus: string
+): Promise<void>
+```
+
+Allows manual override of payment status independent of order status.
+
+### updateOrderTracking
+
+```typescript
+export async function updateOrderTracking(
+    orderId: string,
+    trackingNumber: string
+): Promise<void>
+```
+
+Stores tracking information in the `tracking_notes` field.
+
+## AdminOrder Type
+
+```typescript
+export interface AdminOrder {
+    id: string;
+    created_at: string;
+    status: OrderStatus;
+    total: number;
+    customer_name: string | null;
+    customer_phone?: string | null;
+    delivery_address?: string | null;
+    payment_method?: string | null;
+    payment_status?: string | null;
+    delivery_method?: string | null;
+    coupon_code?: string | null;
+    tracking_notes?: string | null;
+    items?: OrderItem[];
+}
+```
+
+## Filtering by Status
+
+The list view includes an `OrdersFilter` component with status filter tabs. Selecting a status calls `getAllOrders(statusFilter)` and replaces the full order list:
+
+```typescript
+// AdminOrders.tsx
+<OrdersFilter
+    statusFilter={admin.statusFilter}
+    setStatusFilter={(val) => {
+        admin.setStatusFilter(val);
+        admin.setPage(1);
+    }}
+/>
+```
+
+## Kanban Board
+
+The Kanban view (`OrdersKanbanBoard`) groups orders by status into columns. Dragging an order card to a different column calls `updateOrderStatus`. This view is particularly useful for processing orders in real time.
+
+Toggle between views using the `viewMode` state (`'list'` | `'board'`).
+
+## Bulk Status Updates
+
+Select multiple orders in list view to show a floating action bar:
+
+```typescript
+// Bulk update to a specific status
+admin.bulkUpdateStatus(st as OrderStatus);
+```
+
+Available bulk targets: `pending`, `processing`, `shipped`, `delivered`.
+
+## Order Detail Drawer
+
+`OrderDetailDrawer` opens as a slide-in panel when clicking an order in either view. It provides:
+- Full order summary (items, totals, customer info)
+- Status change controls
+- Payment status override
+- Tracking number input
+
+## CSV Export
+
+```typescript
+export function exportOrdersToCSV(orders: AdminOrder[]): void
+```
+
+Generates a UTF-8 BOM CSV with headers: `ID Pedido`, `Cliente`, `Telefono`, `Total`, `Status`, `Fecha`, `Metodo Pago`, `Metodo Envio`. Downloads as `vsm_pedidos_YYYY-MM-DD.csv`.
+
+## Payment Method Values
+
+| Value | Description |
+|-------|-------------|
+| `whatsapp` | Order placed via WhatsApp, payment to be confirmed manually |
+| `mercadopago` | Mercado Pago online payment |
+| `cash` | Cash on delivery |
+| `transfer` | Bank transfer / CLABE |
+
+## Driver Assignment
+
+The `USER_ROLES.DRIVER` constant (`'driver'`) in `src/constants/app.ts` is reserved for delivery drivers. Orders assigned to a driver can be tracked by the driver role — the system supports a driver role distinct from the admin role.
+
+```typescript
+USER_ROLES = {
+    ADMIN: 'admin',
+    CUSTOMER: 'customer',
+    DRIVER: 'driver'
+}
+```

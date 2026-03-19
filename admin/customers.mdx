@@ -1,0 +1,221 @@
+---
+title: "Customer Management"
+description: "Full CRM — customer directory, detailed profiles, God Mode moderation, admin notes, and AI segmentation at /admin/customers."
+---
+
+Customers are managed at `/admin/customers` (directory) and `/admin/customers/:id` (detail view). The module is a full CRM with behavioral analytics, admin notes, account moderation (God Mode), AI tag suggestions, and evidence file uploads.
+
+## Routes
+
+| Route | Component | Description |
+|-------|-----------|-------------|
+| `/admin/customers` | `AdminCustomers` | Searchable directory with global stats |
+| `/admin/customers/:id` | `AdminCustomerDetails` | Full profile — orders, addresses, notes, evidence |
+
+## Customer Directory
+
+`AdminCustomers` fetches all customers from the `customer_intelligence_360` database view, which aggregates profile data with RFM metrics (Recency, Frequency, Monetary).
+
+### getAllCustomers
+
+```typescript
+export async function getAllCustomers(): Promise<AdminCustomer[]>
+```
+
+Fetches from the `customer_intelligence_360` view with these fields:
+
+```typescript
+export interface AdminCustomer {
+    id: string;
+    full_name: string | null;
+    email?: string;
+    avatar_url?: string | null;
+    phone: string | null;
+    whatsapp: string | null;
+    birthdate: string | null;
+    created_at: string;
+    total_orders?: number;
+    total_spent?: number;
+    recency_days?: number;    // Days since last order
+    frequency?: number;       // Order frequency
+    monetary?: number;        // Lifetime monetary value
+    segment?: string;         // e.g. 'Champions', 'At Risk', 'Prospects'
+    health_status?: string;   // e.g. 'Healthy', 'Churning'
+    ai_preferences?: AIPreferences | null;
+    ia_context?: IAContext | null;
+    intelligence?: {
+        segment: string;
+        health_status: string;
+    };
+}
+```
+
+The list is filtered client-side by name, phone, WhatsApp, or ID. Pagination is set to 15 items per page.
+
+## Customer Detail View
+
+### getAdminCustomerDetails
+
+```typescript
+export async function getAdminCustomerDetails(
+    customerId: string
+): Promise<AdminCustomerDetail>
+```
+
+Executes 5 parallel data fetches:
+1. `customer_profiles` — base profile with `account_status` and `suspension_end`
+2. `admin_customer_notes` — CRM notes, tags, custom fields
+3. `addresses` — all shipping/billing addresses
+4. `orders` — all non-cancelled orders for stats calculation
+5. `customer-evidence` Storage bucket — uploaded evidence files
+
+```typescript
+export interface AdminCustomerDetail extends AdminCustomer {
+    account_status?: 'active' | 'suspended' | 'banned';
+    suspension_end?: string | null;
+    addresses: AddressData[];
+    orders_summary: {
+        total_spent: number;
+        total_orders: number;
+        aov: number;              // Average order value
+        last_order_date: string | null;
+    };
+    admin_notes: {
+        notes: string;
+        tags: string[];
+        custom_fields: Record<string, string>;
+    } | null;
+    evidence: {
+        id: string;
+        url: string;
+        file_name: string;
+        uploaded_at: string;
+    }[];
+}
+```
+
+## Customer Tiers
+
+Customers are automatically assigned to tiers based on lifetime spend, stored in `customer_profiles.customer_tier`:
+
+| Tier | Value |
+|------|-------|
+| Bronze | `'bronze'` |
+| Silver | `'silver'` |
+| Gold | `'gold'` |
+| Platinum | `'platinum'` |
+
+Tier progression is calculated from `total_orders` and `total_spent` fields on `customer_profiles`.
+
+## God Mode — Account Moderation
+
+<Warning>
+  God Mode operations (ban/suspend) directly modify `account_status` on `customer_profiles`. A banned user cannot log in or place orders. Use with caution.
+</Warning>
+
+### updateCustomerStatus
+
+```typescript
+export async function updateCustomerStatus(
+    customerId: string,
+    status: 'active' | 'suspended' | 'banned',
+    suspensionEnd?: string | null
+): Promise<void>
+```
+
+| Status | Effect |
+|--------|--------|
+| `active` | Normal account access |
+| `suspended` | Temporary lock. `suspension_end` sets the auto-lift date |
+| `banned` | Permanent ban. No automatic lifting |
+
+### sendCustomerNotification
+
+```typescript
+export async function sendCustomerNotification(
+    userId: string,
+    title: string,
+    message: string,
+    type: 'info' | 'warning' | 'alert' | 'success'
+): Promise<void>
+```
+
+Inserts a row into `user_notifications` table. The notification appears in the customer's notification center on their next visit.
+
+## Admin CRM Notes
+
+```typescript
+export async function updateAdminCustomerNotes(
+    customerId: string,
+    data: {
+        tags?: string[];
+        custom_fields?: Record<string, string>;
+        notes?: string;
+    }
+): Promise<void>
+```
+
+Upserts into `admin_customer_notes`. Notes, tags, and custom key-value fields are all stored per customer. Tags can be used for segmentation (e.g. `['vip', 'wholesale', 'returner']`).
+
+## Evidence Upload
+
+Admins can upload evidence files (e.g. ID copies, purchase receipts) attached to a customer:
+
+```typescript
+export async function uploadCustomerEvidence(
+    customerId: string,
+    file: File
+): Promise<string>
+```
+
+Files are stored in the `customer-evidence` Supabase Storage bucket under `<customerId>/<randomName>.<ext>`. The full file list is retrieved via `supabase.storage.from('customer-evidence').list(customerId)`.
+
+## Create Customer (Admin)
+
+Admins can create customers directly without requiring a self-signup flow:
+
+```typescript
+export async function createCustomerWithDetails(
+    data: CreateCustomerData
+): Promise<User>
+
+export interface CreateCustomerData {
+    email: string;
+    password?: string;       // Auto-generated if omitted
+    full_name: string;
+    phone: string;
+    whatsapp: string;
+    address: Omit<AddressData, 'customer_id'>;
+}
+```
+
+This creates a temporary Supabase client with the anon key to register the user without signing out the currently logged-in admin. A `customer_profiles` record and a default address are created immediately after signup.
+
+## AI Customer Intelligence
+
+### suggestCustomerTags
+
+```typescript
+export async function suggestCustomerTags(
+    customerId: string
+): Promise<{ tags: string[]; segment: string; reasoning: string }>
+```
+
+Calls the `customer-intelligence` Supabase Edge Function with `action: 'suggest_tags'`. Returns AI-generated CRM tags, a customer segment label, and the reasoning behind the suggestions.
+
+### Customer Preferences Analysis
+
+```typescript
+export async function getCustomerPreferences(
+    customerId: string
+): Promise<{
+    topProducts: { name: string; count: number }[];
+    topCategories: { name: string; count: number }[];
+}>
+```
+
+Analyzes all non-cancelled order items for a customer to compute their top 5 products and top 5 categories by quantity purchased.
+
+<Tip>
+  The `customer-intelligence` edge function supports multiple actions beyond tag suggestion. See `admin-crm.service.ts` for `generateWhatsAppMessage`, `getCustomerNarrative`, and `getStrategicLoyaltyAnalysis`.
+</Tip>

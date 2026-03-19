@@ -1,0 +1,235 @@
+---
+title: "Cart & Checkout"
+description: "Zustand cart store with localStorage persistence, CartSidebar, checkout flow with WhatsApp and Mercado Pago, coupon validation, and loyalty points."
+---
+
+The cart is managed by a Zustand store with `persist` middleware. Checkout routes the order through either a formatted WhatsApp message or Mercado Pago payment preference. Loyalty points are automatically calculated and awarded on every completed order.
+
+## Cart State
+
+The full `CartState` interface from `src/stores/cart.store.ts`:
+
+```typescript
+interface CartState {
+    // State
+    items: CartItem[];
+    isOpen: boolean;
+    bundleOffer: SmartBundleOffer | null;
+
+    // Actions
+    addItem(product: Product, quantity?: number, variant?: { id: string; name: string } | null): void;
+    removeItem(productId: string, variantId?: string | null): void;
+    updateQuantity(productId: string, quantity: number, variantId?: string | null): void;
+    clearCart(): void;
+    toggleCart(): void;
+    openCart(): void;
+    closeCart(): void;
+    loadOrderItems(items: CartItem[]): void;
+    validateCart(): Promise<CartValidationResult>;
+
+    // Smart bundles
+    setBundleOffer(offer: SmartBundleOffer | null): void;
+    applyBundle(product: Product, couponCode: string): void;
+}
+```
+
+**Memoized selectors** (use these in components to prevent unnecessary re-renders):
+
+```typescript
+import { useCartStore, selectTotalItems, selectSubtotal, selectTotal } from '@/stores/cart.store';
+
+const totalItems = useCartStore(selectTotalItems); // Sum of all quantities
+const subtotal   = useCartStore(selectSubtotal);   // Sum of price * quantity
+const total      = useCartStore(selectTotal);      // Currently equals subtotal
+```
+
+## Persistence
+
+<CardGroup cols={2}>
+  <Card title="localStorage key" icon="hard-drive">
+    `vsm-cart` — stored as JSON by Zustand `persist` middleware.
+  </Card>
+  <Card title="Persisted fields" icon="database">
+    Only `items` is persisted. `isOpen`, `bundleOffer` are always reset to defaults on page load.
+  </Card>
+</CardGroup>
+
+The store uses schema versioning (`version: 2`). If the persisted data is from `version < 2`, the cart is cleared during hydration to avoid stale `Product` objects with missing fields:
+
+```typescript
+migrate: (persisted, version) => {
+    if (version < 2) {
+        return { items: [] };
+    }
+    return persisted as { items: CartItem[] };
+}
+```
+
+The store also listens for `storage` events to synchronize the cart across multiple open browser tabs.
+
+## Cart Actions
+
+<Accordion title="addItem(product, quantity?, variant?)">
+  Rejects silently if `!product.is_active` or `product.status === 'discontinued'`.
+
+  If the product+variant combination already exists in the cart, increments quantity (clamped to `product.stock`). Otherwise appends a new `CartItem`.
+
+  Fires `trackAddToCart(product, quantity)` (GA4 `add_to_cart` event) asynchronously via dynamic import.
+</Accordion>
+
+<Accordion title="removeItem(productId, variantId?)">
+  Removes the item matching both `productId` and `variantId` from `items[]`. Variant-aware — removing a base product does not remove its variants.
+</Accordion>
+
+<Accordion title="updateQuantity(productId, quantity, variantId?)">
+  Clamps the new quantity to `Math.min(quantity, item.product.stock)`. If `quantity <= 0`, delegates to `removeItem()`.
+</Accordion>
+
+<Accordion title="loadOrderItems(items)">
+  Replaces the entire cart with items from a previous order. Used by the re-order feature on the Order History page (`/orders`). Preserves `variant_id` and `variant_name` from historical order items.
+</Accordion>
+
+<Accordion title="validateCart()">
+  Fetches current product data via `getProductsByIds()` and checks each cart item for:
+  - **Removed / deactivated products** → removes from cart, records `type: 'removed'`
+  - **Out of stock** → removes from cart, records `type: 'out_of_stock'`
+  - **Price changes** → updates product reference, records `type: 'price_changed'`
+  - **Stock adjustments** → clamps quantity, records `type: 'stock_adjusted'`
+
+  Returns `CartValidationResult { issues: CartValidationIssue[], hasIssues: boolean }`.
+</Accordion>
+
+## Cart Item and Types
+
+```typescript
+export interface CartItem {
+    product: Product;
+    quantity: number;
+    variant_id?: string | null;
+    variant_name?: string | null;
+}
+
+export type DeliveryType = 'pickup' | 'delivery';
+export type PaymentMethod = 'whatsapp' | 'mercadopago' | 'cash' | 'transfer' | 'card';
+export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
+```
+
+## Checkout Flow
+
+<Steps>
+  <Step title="CartSidebar">
+    Rendered as a slide-in panel (`src/components/cart/CartSidebar.tsx`). Displays items, subtotal, and a CTA to proceed to checkout. Accessible via `openCart()` / `toggleCart()`.
+  </Step>
+  <Step title="Checkout page">
+    `/checkout` renders `<CheckoutForm />` (`src/components/cart/CheckoutForm.tsx`). Collects `customerName`, `customerPhone`, `deliveryType`, `address`, and `paymentMethod`.
+  </Step>
+  <Step title="Coupon validation">
+    `validateCoupon(code)` from `coupons.service.ts` checks the coupon against the `coupons` table (min purchase, max uses, active status). A valid coupon returns discount amount.
+  </Step>
+  <Step title="Payment routing">
+    Based on `paymentMethod`, the checkout branches into WhatsApp or Mercado Pago.
+  </Step>
+  <Step title="Order creation">
+    `createOrder(data)` from `orders.service.ts` inserts the order and automatically awards loyalty points.
+  </Step>
+</Steps>
+
+## Payment Methods
+
+<Tabs>
+  <Tab title="WhatsApp">
+    When `paymentMethod === 'whatsapp'`, `SITE_CONFIG.orderWhatsApp.generateMessage(order)` builds a formatted message and opens `https://wa.me/{number}?text={encodedMessage}`.
+
+    ```typescript
+    // From src/config/site.ts
+    SITE_CONFIG.orderWhatsApp.generateMessage(order: Order): string
+    // Returns a WhatsApp-formatted string:
+    // 🛒 *NUEVO PEDIDO — VSM Store*
+    // 📋 Orden #${order.id}
+    // 👤 ${order.customerName}
+    // 📱 ${order.customerPhone}
+    // *PRODUCTOS:*
+    // • Product Name (variant) x2 — $299.00
+    // 💰 *TOTAL: $598.00 MXN*
+    // 📦 🚚 Envío a domicilio / 🏪 Recoger en tienda
+    // 💳 payment method
+    ```
+
+    After the WhatsApp window opens, `markWhatsAppSent(orderId)` is called to record `whatsapp_sent: true` and `whatsapp_sent_at` on the order.
+  </Tab>
+  <Tab title="Mercado Pago">
+    When `paymentMethod === 'mercadopago'`, the payments service (`src/services/payments/`) creates a Mercado Pago preference and redirects the customer to the hosted checkout page.
+
+    The order stores `mp_preference_id` for reference. Payment result callbacks land on:
+    - `/payment/success` → `PaymentSuccess.tsx`
+    - `/payment/failure` → `PaymentFailure.tsx`
+    - `/payment/pending` → `PaymentPending.tsx`
+
+    <Warning>
+      Mercado Pago integration is partially implemented. Full payment flow requires valid Mercado Pago API credentials and webhook configuration.
+    </Warning>
+  </Tab>
+  <Tab title="Cash / Transfer">
+    `cash` and `transfer` payment methods result in an order created with `payment_status: 'pending'`. The formatted WhatsApp message adapts accordingly:
+
+    ```typescript
+    // From SITE_CONFIG.orderWhatsApp.generateMessage:
+    order.paymentMethod === 'cash' ? '💵 Contra Entrega' :
+    order.paymentMethod === 'card' ? '💳 Tarjeta' :
+    '🏦 Transferencia / Depósito'
+    ```
+
+    Bank transfer details from `SITE_CONFIG.bankAccount` are shown on the confirmation page.
+  </Tab>
+</Tabs>
+
+## Coupon Validation
+
+```typescript
+// coupons.service.ts
+validateCoupon(code: string): Promise<Coupon | null>
+```
+
+The `coupons` table stores:
+- `code` — unique coupon string
+- `discount_type: 'fixed' | 'percent'`
+- `discount_value` — amount or percentage
+- `min_purchase` — minimum cart subtotal required
+- `max_uses` — maximum redemption count
+
+## Loyalty Points on Checkout
+
+Loyalty points are awarded automatically inside `createOrder()` without any customer action required:
+
+```typescript
+// From orders.service.ts createOrder():
+const points = data.earned_points ?? calculateLoyaltyPoints(data.total);
+if (points > 0) {
+    await addLoyaltyPoints(
+        data.customer_id,
+        points,
+        order.id,
+        `Compra #${order.order_number}`
+    );
+}
+```
+
+The conversion rate is defined in `src/lib/domain/loyalty.ts`:
+
+> **$100 MXN = 10 loyalty points**
+
+If `addLoyaltyPoints` fails, the error is logged but does **not** throw — the order succeeds regardless.
+
+## GA4 Tracking
+
+```typescript
+// Fired in cart.store.ts addItem():
+import('@/lib/analytics').then(({ trackAddToCart }) => {
+    trackAddToCart(product, quantity);
+});
+```
+
+Additional checkout events from `src/lib/analytics.ts`:
+- `view_item` — fires on product detail page load
+- `begin_checkout` — fires when checkout form opens
+- `purchase` — fires on successful order creation

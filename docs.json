@@ -1,122 +1,94 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "VSM Store",
+  "theme": "almond",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#94a9b2",
+    "light": "#283544",
+    "dark": "#dbe3e4"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/73390174-770b-4286-89b1-51ead8138814.png",
+  "logo": {
+    "light": "https://media.brand.dev/73390174-770b-4286-89b1-51ead8138814.png",
+    "dark": "https://media.brand.dev/73390174-770b-4286-89b1-51ead8138814.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/ventasdoodles/vsm-store"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/ventasdoodles/vsm-store"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Overview",
         "groups": [
           {
-            "group": "Getting started",
-            "pages": [
-              "index",
-              "quickstart",
-              "development"
-            ]
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "environment-setup"]
           },
           {
-            "group": "Customization",
-            "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
-            ]
+            "group": "Architecture",
+            "pages": ["architecture/overview", "architecture/tech-stack", "architecture/database", "architecture/state-management"]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Storefront",
         "groups": [
           {
-            "group": "API documentation",
-            "pages": [
-              "api-reference/introduction"
-            ]
+            "group": "Core Features",
+            "pages": ["storefront/catalog", "storefront/product-detail", "storefront/search", "storefront/cart-checkout"]
           },
           {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
-            ]
+            "group": "User Accounts",
+            "pages": ["storefront/authentication", "storefront/profile", "storefront/orders", "storefront/loyalty-program"]
+          }
+        ]
+      },
+      {
+        "tab": "Admin Panel",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": ["admin/overview", "admin/dashboard"]
+          },
+          {
+            "group": "Management",
+            "pages": ["admin/products", "admin/categories", "admin/orders", "admin/customers", "admin/coupons"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["admin/settings", "admin/monitoring"]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Reference",
+        "groups": [
+          {
+            "group": "Services API",
+            "pages": ["reference/services/products", "reference/services/orders", "reference/services/auth", "reference/services/admin"]
+          },
+          {
+            "group": "Hooks",
+            "pages": ["reference/hooks/overview"]
+          },
+          {
+            "group": "AI Edge Functions",
+            "pages": ["reference/ai/overview", "reference/ai/edge-functions"]
+          },
+          {
+            "group": "Types",
+            "pages": ["reference/types"]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }
