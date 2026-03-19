@@ -1,0 +1,108 @@
+{
+  "projectType": "saas",
+  "projectName": "VSM Store",
+  "projectDescription": "A full-stack Progressive Web App e-commerce platform for VSM (Vape Store Mexico), selling vape and 420 products with customer accounts, loyalty program, and an integrated admin panel.",
+  "theme": "almond",
+  "primaryColor": "#94a9b2",
+  "lightColor": "#283544",
+  "darkColor": "#dbe3e4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "environment-setup"]
+          },
+          {
+            "group": "Architecture",
+            "pages": ["architecture/overview", "architecture/tech-stack", "architecture/database", "architecture/state-management"]
+          }
+        ]
+      },
+      {
+        "tab": "Storefront",
+        "groups": [
+          {
+            "group": "Core Features",
+            "pages": ["storefront/catalog", "storefront/product-detail", "storefront/search", "storefront/cart-checkout"]
+          },
+          {
+            "group": "User Accounts",
+            "pages": ["storefront/authentication", "storefront/profile", "storefront/orders", "storefront/loyalty-program"]
+          }
+        ]
+      },
+      {
+        "tab": "Admin Panel",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": ["admin/overview", "admin/dashboard"]
+          },
+          {
+            "group": "Management",
+            "pages": ["admin/products", "admin/categories", "admin/orders", "admin/customers", "admin/coupons"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["admin/settings", "admin/monitoring"]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Reference",
+        "groups": [
+          {
+            "group": "Services API",
+            "pages": ["reference/services/products", "reference/services/orders", "reference/services/auth", "reference/services/admin"]
+          },
+          {
+            "group": "Hooks",
+            "pages": ["reference/hooks/overview"]
+          },
+          {
+            "group": "AI Edge Functions",
+            "pages": ["reference/ai/overview", "reference/ai/edge-functions"]
+          },
+          {
+            "group": "Types",
+            "pages": ["reference/types"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Dual-section product catalog (Vape & 420) with filtering, search, and detailed product pages",
+    "Persistent shopping cart with stock validation and WhatsApp + Mercado Pago checkout",
+    "Full customer authentication with profiles, order history, and address management",
+    "4-tier loyalty program (Bronze → Silver → Gold → Platinum) with points earn/burn",
+    "Integrated admin panel with dashboard, product/category/order/customer/coupon management",
+    "AI-powered edge functions via Google Gemini for inventory predictions, dashboard insights, and product copy",
+    "PWA (Progressive Web App) with offline support, dark/light theme, and haptic feedback",
+    "Real-time monitoring via Sentry and GA4 e-commerce event tracking"
+  ],
+  "publicApiSurface": [
+    "getProducts(options?): Promise<Product[]>",
+    "getFeaturedProducts(section?): Promise<Product[]>",
+    "getProductBySlug(slug, section): Promise<Product | null>",
+    "createOrder(data): Promise<OrderRecord>",
+    "getCustomerOrders(customerId): Promise<OrderRecord[]>",
+    "signUp(email, password, fullName, phone?): Promise<AuthResponse>",
+    "signIn(email, password): Promise<AuthResponse>",
+    "validateCoupon(code): Promise<Coupon | null>",
+    "getDashboardStats(startDate?, endDate?): Promise<DashboardStats>",
+    "useProducts(options?): UseQueryResult",
+    "useCreateOrder(): UseMutationResult",
+    "useSearch(query): UseQueryResult",
+    "useLoyalty(): UseQueryResult",
+    "CartStore: { items, addItem, removeItem, updateQuantity, clearCart }",
+    "Edge Function: inventory-oracle",
+    "Edge Function: dashboard-intelligence",
+    "Edge Function: customer-intelligence",
+    "Edge Function: voice-intelligence",
+    "Edge Function: product-intelligence"
+  ]
+}
